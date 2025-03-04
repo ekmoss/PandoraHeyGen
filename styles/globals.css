@@ -7,3 +7,43 @@ li {
   margin-left: 30px;
   padding: 2px;
 }
+
+/* Add animation delay utility classes */
+.animation-delay-2000 {
+  animation-delay: 2s;
+}
+
+.animation-delay-4000 {
+  animation-delay: 4s;
+}
+
+/* Conversation starters carousel animations */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in-up {
+  animation: fadeInUp 0.5s ease-out forwards;
+}
+
+@keyframes fadeOutDown {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+}
+
+.fade-out-down {
+  animation: fadeOutDown 0.5s ease-in forwards;
+}

@@ -1,0 +1,157 @@
+# Pandora HeyGen Interactive Avatar Customization Plan
+
+## Current Project Understanding
+
+The HeyGen Interactive Avatar NextJS Demo is a web application that allows users to interact with digital avatars using both text and voice input. The application is built using:
+
+- NextJS as the framework
+- TailwindCSS for styling
+- HeyGen's Streaming Avatar SDK for avatar rendering and interaction
+- NextUI for UI components
+
+Key components:
+- InteractiveAvatar.tsx: The main component that handles avatar display, user input, and session management
+- API endpoints for generating access tokens for the HeyGen API
+- Pre-defined avatars and language options
+
+## Running the Demo (Initial Setup)
+
+1. Ensure required dependencies are installed:
+   ```
+   npm install
+   ```
+
+2. Configure the environment by adding the HeyGen API key to the .env file:
+   ```
+   HEYGEN_API_KEY=your_heygen_api_key
+   ```
+
+3. Start the development server:
+   ```
+   npm run dev
+   ```
+
+4. Access the application at http://localhost:3000
+
+## 24-Hour Implementation Plan (Priority-Based)
+
+### Priority 1: Core Functionality & Reliability
+**Critical for trade show success**
+
+1. Set up the environment with the HeyGen API key
+2. Test the basic functionality to ensure the API is working properly
+3. Implement error handling and connection recovery mechanisms:
+   - Add retry logic for API calls
+   - Create visual indicators for connection status
+   - Implement session reconnection if disconnected
+   - Build robust retry logic with exponential backoff for 503 and other server errors
+   - Create a fallback UI experience when the avatar service is unavailable
+4. Test latency in various network conditions
+
+### Priority 2: Portrait Mode & Push-to-Talk
+**Essential for usability in trade show setting**
+
+1. Modify app/page.tsx for full-screen portrait layout (1080p+)
+2. Update InteractiveAvatar.tsx to:
+   - Adjust video container for portrait orientation (tall, narrow layout)
+   - Maximize the avatar visualization area
+   - Remove unnecessary UI elements
+3. Create a large, simple push-to-talk button:
+   - Position it at the bottom of the screen for easy access
+   - Add clear visual feedback when active/listening
+   - Ensure touch responsiveness for trade show environment
+
+### Priority 3: Visual Customization
+**Important for branding but secondary to functionality**
+
+1. Set a custom background in the code (not via UI controls)
+2. Add minimal company branding elements:
+   - Logo overlay in a non-intrusive position
+   - Company color scheme in the UI
+3. Clean up the UI to remove any unnecessary elements
+4. Ensure visual elements don't impact performance
+
+### Priority 4: Performance Optimization
+**Critical for robust operation**
+
+1. Reduce render cycles and optimize component performance
+2. Test and adjust video quality settings for best balance of quality vs. latency
+3. Implement basic monitoring to track latency and performance issues
+4. Create graceful degradation for poor network conditions
+
+### Priority 5: Enhanced Experience
+**Only if time permits**
+
+1. Add a simple admin control (accessible via a hidden gesture or key combination)
+2. Create a clean "starting" state with instructions for users
+3. Add a basic interaction timeout reset to recover from stuck states
+
+## Specific Code Changes (In Order of Priority)
+
+### 1. Reliability Enhancements (InteractiveAvatar.tsx)
+- Add error recovery logic in API calls
+- Implement reconnection logic for dropped sessions
+- Create visual status indicators for connection health
+
+### 2. Full-Screen Portrait Mode (app/page.tsx)
+- Remove width constraints
+- Set height to 100vh
+- Center content vertically and horizontally
+
+### 3. Push-to-Talk Implementation (InteractiveAvatar.tsx)
+- Replace existing voice chat UI with a large push-to-talk button
+- Implement press/release handlers for voice activation
+- Add visual feedback for listening state
+
+### 4. Visual Customization
+- Add static background setting in avatar initialization
+- Insert company logo at appropriate position
+- Update color scheme to match company branding
+
+## Technical Focus Areas for Robustness
+
+### 1. Network Resilience
+- Monitor connection quality
+- Implement graceful recovery for network issues
+- Provide clear visual feedback for connection states
+
+### 2. Audio Input/Output Reliability
+- Ensure microphone permissions are properly handled
+- Test in noisy environment conditions
+- Implement fallbacks for audio processing failures
+
+### 3. Error States & Recovery
+- Create recovery paths for all potential error states
+- Ensure the UI remains responsive even during processing
+- Implement automatic recovery when possible
+- Add exponential backoff retry logic for temporary server errors (503)
+- Implement a graceful fallback experience that presents pre-recorded content
+- Create a user-friendly error message system that maintains brand presence
+
+### 4. Performance Monitoring
+- Add basic logging for latency and errors
+- Ensure smooth visual performance even during processing
+- Optimize for consistent frame rates
+
+## Testing Focus
+
+1. Connection stability testing:
+   - Test with intermittent network connectivity
+   - Verify recovery from connection drops
+   - Measure and optimize latency
+
+2. Input/output testing:
+   - Test microphone in various noise conditions
+   - Verify avatar responsiveness
+   - Test touch interaction reliability
+
+3. Visual verification:
+   - Ensure correct portrait orientation display
+   - Verify branding elements appear correctly
+   - Test on target display hardware if possible
+
+## Conclusion
+
+This 24-hour implementation plan focuses on creating a robust, latency-optimized interactive avatar experience for a trade show environment. By prioritizing reliability, appropriate UI layout, and simple but effective interaction, we can deliver a functioning product within the condensed timeline.
+
+The focus on robustness will ensure the system can withstand the challenging network and environmental conditions of a trade show, while the simplified approach to customization will allow for adequate branding without compromising the core functionality. 

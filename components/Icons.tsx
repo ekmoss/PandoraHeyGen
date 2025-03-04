@@ -1,5 +1,11 @@
-export function HeyGenLogo() {
-  return <img src="/heygen-logo.png" className="h-8" alt="HeyGen Logo" />;
+export function CapgeminiLogo() {
+  return (
+    <img
+      src="/capgemini-logo-spade.png"
+      className="h-8"
+      alt="Capgemini Spade Logo"
+    />
+  );
 }
 
 type IconSvgProps = {

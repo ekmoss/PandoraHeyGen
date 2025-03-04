@@ -5,7 +5,6 @@ import { Metadata, Viewport } from "next";
 import { Providers } from "./providers";
 
 import { Fira_Code as FontMono, Inter as FontSans } from "next/font/google";
-import NavBar from "@/components/NavBar";
 
 const fontSans = FontSans({
   subsets: ["latin"],
@@ -19,11 +18,11 @@ const fontMono = FontMono({
 
 export const metadata: Metadata = {
   title: {
-    default: "HeyGen Interactive Avatar SDK Demo",
-    template: `%s - HeyGen Interactive Avatar SDK Demo`,
+    default: "Capgemini Pandora for KickOn 2025",
+    template: `%s - Capgemini Pandora for KickOn 2025`,
   },
   icons: {
-    icon: "/heygen-logo.png",
+    icon: "/capgemini-logo-spade.png",
   },
 };
 
@@ -49,7 +48,6 @@ export default function RootLayout({
       <body className={clsx("min-h-screen bg-background antialiased")}>
         <Providers themeProps={{ attribute: "class", defaultTheme: "dark" }}>
           <main className="relative flex flex-col h-screen w-screen">
-            <NavBar />
             {children}
           </main>
         </Providers>

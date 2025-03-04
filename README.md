@@ -1,45 +1,59 @@
-# HeyGen Interactive Avatar NextJS Demo
+# Pandora - Customized HeyGen Interactive Avatar
 
-![HeyGen Interactive Avatar NextJS Demo Screenshot](./public/demo.png)
+![Pandora Interactive Avatar](./public/demo.png)
 
-This is a sample project and was bootstrapped using [NextJS](https://nextjs.org/).
-Feel free to play around with the existing code and please leave any feedback for the SDK [here](https://github.com/HeyGen-Official/StreamingAvatarSDK/discussions).
+This is a customized version of the HeyGen Interactive Avatar demo, tailored specifically for Capgemini's trade show experience. The avatar has been optimized for touch screens in portrait mode with a focus on user-friendly interaction.
 
-## Getting Started FAQ
+## Features
 
-### Setting up the demo
+- **Full-screen Portrait Mode**: Optimized for large touchscreen displays
+- **Push-to-Talk Interface**: Simple tap-to-toggle microphone control
+- **Auto-configuration**: Avatar settings are loaded from environment variables
+- **Capgemini Branding**: Uses Capgemini AUNZ colors and design language
+- **Admin Panel**: Hidden configuration panel accessible by typing "admin"
+
+## Environment Configuration
+
+Configuration is managed through environment variables in the `.env` file:
+
+```
+HEYGEN_API_KEY=your_api_key_here
+NEXT_PUBLIC_DEFAULT_AVATAR_ID=avatar_id_here
+NEXT_PUBLIC_DEFAULT_KNOWLEDGE_ID=knowledge_id_here
+NEXT_PUBLIC_DEFAULT_LANGUAGE=en-US
+NEXT_PUBLIC_AVATAR_NAME=Pandora
+NEXT_PUBLIC_AVATAR_TAGLINE=The Capgemini AUNZ Assistant
+```
+
+## Getting Started
 
 1. Clone this repo
-
 2. Navigate to the repo folder in your terminal
-
-3. Run `npm install` (assuming you have npm installed. If not, please follow these instructions: https://docs.npmjs.com/downloading-and-installing-node-js-and-npm/)
-
-4. Enter your HeyGen Enterprise API Token or Trial Token in the `.env` file. Replace `HEYGEN_API_KEY` with your API key. This will allow the Client app to generate secure Access Tokens with which to create interactive sessions.
-
-   You can retrieve either the API Key or Trial Token by logging in to HeyGen and navigating to this page in your settings: [https://app.heygen.com/settings?nav=API]. NOTE: use the trial token if you don't have an enterprise API token yet.
-
-5. (Optional) If you would like to use the OpenAI features, enter your OpenAI Api Key in the `.env` file.
-
+3. Run `npm install`
+4. Enter your HeyGen Enterprise API Token or Trial Token in the `.env` file
+5. Configure the default avatar settings in the `.env` file
 6. Run `npm run dev`
 
-### Difference between Trial Token and Enterprise API Token
+## Admin Access
 
-The HeyGen Trial Token is available to all users, not just Enterprise users, and allows for testing of the Interactive Avatar API, as well as other HeyGen API endpoints.
+To access the admin configuration panel at any time:
 
-Each Trial Token is limited to 3 concurrent interactive sessions. However, every interactive session you create with the Trial Token is free of charge, no matter how many tasks are sent to the avatar. Please note that interactive sessions will automatically close after 10 minutes of no tasks sent.
+1. Type "admin" on your keyboard
+2. Enter the access code: "capgemini123"
+3. Adjust settings as needed
+4. Click "Start With Custom Settings" to begin a session with these settings
 
-If you do not 'close' the interactive sessions and try to open more than 3, you will encounter errors including stuttering and freezing of the Interactive Avatar. Please endeavor to only have 3 sessions open at any time while you are testing the Interactive Avatar API with your Trial Token.
+## Trade Show Usage Guidelines
 
-### Starting sessions
+For the best trade show experience:
 
-NOTE: Make sure you have enter your token into the `.env` file and run `npm run dev`.
+- Ensure the device is in portrait orientation
+- Use a device with a responsive touchscreen
+- Test microphone functionality before the event
+- Ensure internet connectivity is stable
+- Keep the avatar at "High" quality setting for best visual appearance
 
-To start your 'session' with a Interactive Avatar, first click the 'start' button. If your HeyGen API key is entered into the Server's .env file, then you should see our demo Interactive Avatar (Monica!) appear.
-
-After you see Monica appear on the screen, you can enter text into the input labeled 'Repeat', and then hit Enter. The Interactive Avatar will say the text you enter.
-
-If you want to see a different Avatar or try a different voice, you can close the session and enter the IDs and then 'start' the session again. Please see below for information on where to retrieve different Avatar and voice IDs that you can use.
+## Original HeyGen Documentation
 
 ### Which Avatars can I use with this project?
 

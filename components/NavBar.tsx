@@ -7,19 +7,23 @@ import {
   NavbarContent,
   NavbarItem,
 } from "@nextui-org/react";
-import { GithubIcon, HeyGenLogo } from "./Icons";
+import { GithubIcon, CapgeminiLogo } from "./Icons";
 import { ThemeSwitch } from "./ThemeSwitch";
 
 export default function NavBar() {
   return (
     <Navbar className="w-full">
       <NavbarBrand>
-        <Link isExternal aria-label="HeyGen" href="https://app.heygen.com/">
-          <HeyGenLogo />
+        <Link
+          isExternal
+          aria-label="AUNZ Taskforce"
+          href="https://capgeminiaus.sharepoint.com/sites/OneGenAIAUNZ/SitePages/GenAI-Task-Force.aspx"
+        >
+          <CapgeminiLogo />
         </Link>
         <div className="bg-gradient-to-br from-sky-300 to-indigo-500 bg-clip-text ml-4">
           <p className="text-xl font-semibold text-transparent">
-            HeyGen Interactive Avatar SDK NextJS Demo
+            Project Pandora Demo
           </p>
         </div>
       </NavbarBrand>
