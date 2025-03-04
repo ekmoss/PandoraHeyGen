@@ -1,0 +1,146 @@
+# HeyGen Interactive Avatar Implementation Notes
+
+## Push-to-Talk Button Implementation
+
+### Problems Encountered
+1. **Rapid Toggling**: When users clicked the push-to-talk button, it would rapidly toggle on/off, causing API errors and UI flickering.
+2. **Authentication Issues**: The HeyGen API was returning 401 errors during microphone operations.
+3. **Microphone Control**: The API had specific requirements for the sequence and timing of startListening/stopListening calls.
+4. **Event Conflict**: Multiple event handlers were causing interference with the microphone state.
+
+### Solutions Implemented
+
+#### 1. Debounce to Prevent Rapid Toggling
+Added a time-based debounce to prevent rapid state changes:
+
+```typescript
+const handlePushToTalkToggle = useCallback(() => {
+  // Debounce to prevent rapid toggling (minimum 500ms between toggles)
+  const now = Date.now();
+  if (now - lastToggleTime < 500) {
+    console.log("Toggling too fast, ignoring");
+    return;
+  }
+  
+  setLastToggleTime(now);
+  // Rest of the function...
+}, [isPushingToTalk, lastToggleTime, stream]);
+```
+
+#### 2. Improved Error Handling
+Added explicit error handling around API calls with user-friendly feedback:
+
+```typescript
+try {
+  if (avatar.current) {
+    avatar.current.stopListening();
+    console.log("Microphone stopped via SDK");
+  }
+  setIsMicrophoneEnabled(false);
+} catch (error) {
+  console.error("Error stopping microphone:", error);
+  setMicError("Failed to stop microphone");
+}
+```
+
+#### 3. Delayed Microphone Activation
+Added a slight delay between UI updates and API calls to ensure proper token handling:
+
+```typescript
+if (avatar.current && stream) {
+  setIsPushingToTalk(true);
+  
+  // Slight delay to ensure the UI updates before potentially heavy API operations
+  setTimeout(() => {
+    try {
+      avatar.current?.startListening();
+      console.log("Microphone started via SDK");
+      setIsMicrophoneEnabled(true);
+    } catch (error) {
+      console.error("Error starting microphone:", error);
+      setIsPushingToTalk(false);
+      setMicError("Failed to start microphone");
+    }
+  }, 100);
+}
+```
+
+#### 4. Proper Session Initialization
+Ensured microphone is properly initialized when the session starts:
+
+```typescript
+useEffect(() => {
+  // This effect ensures we properly set up the audio when the stream is ready
+  if (stream && avatar.current && chatMode === "voice_mode") {
+    // Initial state is mic off
+    try {
+      avatar.current.stopListening();
+      console.log("Initial microphone state: disabled");
+    } catch (error) {
+      console.error("Error setting initial microphone state:", error);
+    }
+  }
+  
+  // Clean up on mode change or unmount
+  return () => {
+    if (avatar.current) {
+      try {
+        avatar.current.stopListening();
+        console.log("Cleaning up microphone state");
+      } catch (error) {
+        console.error("Error cleaning up microphone:", error);
+      }
+    }
+  };
+}, [stream, chatMode]);
+```
+
+#### 5. Enhanced UI Feedback
+Improved user feedback for errors and microphone state:
+
+```typescript
+{/* Button text */}
+<span className="text-xl font-medium whitespace-nowrap">
+  {isPushingToTalk
+    ? "Tap to Stop"
+    : micError 
+      ? "Try Again" 
+      : "Tap to Talk"}
+</span>
+
+{/* Error message */}
+{micError && (
+  <div className="absolute -bottom-10 left-1/2 transform -translate-x-1/2 text-white font-medium bg-red-500/90 backdrop-blur-sm px-4 py-1.5 rounded-full text-sm shadow-lg">
+    {micError}
+  </div>
+)}
+```
+
+### HeyGen SDK Behavior Notes
+
+1. The HeyGen SDK requires valid authentication tokens for each API call, and tokens appear to expire or become invalid during long sessions.
+
+2. The proper sequence for microphone control is:
+   - Initialize with `stopListening()` when the session starts
+   - Call `startListening()` when user activates push-to-talk
+   - Call `stopListening()` when user deactivates push-to-talk
+   - Always ensure `stopListening()` is called during cleanup
+
+3. Error handling is critical, as the API can return 401, 403, or 503 errors during normal usage:
+   - 401: Authentication issues, typically token-related
+   - 503: Service unavailable, typically temporary API outages
+   - Various other errors during microphone activation/deactivation
+
+### Future Improvements
+
+1. **Token Refresh**: Implement automatic token refresh to prevent 401 errors during long sessions.
+2. **Reconnection Logic**: Add automatic reconnection logic if the connection is dropped.
+3. **Fallback Content**: Implement a fallback UI with pre-recorded content if the live API is unavailable.
+4. **Performance Monitoring**: Add detailed logging of API call timing and success rates.
+
+## UI Style Reference
+
+- **Inactive Button**: White background with blue border
+- **Active Button**: Capgemini blue with white text and subtle animation
+- **Error State**: Red indicator with helpful error message
+- **Status Indicator**: Blue pill showing "Microphone Active" when in use 
