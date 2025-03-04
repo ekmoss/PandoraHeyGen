@@ -157,19 +157,7 @@ module.exports = {
           "900": "#0F172A",
           "950": "#020420"
         },
-        "deep-purple": {
-          "50": "#EFECFF",
-          "100": "#DFD8FE",
-          "200": "#C1B1FE",
-          "300": "#9980FD",
-          "400": "#7551FB",
-          "500": "#5927F9",
-          "600": "#3F0AF0",
-          "700": "#3008CE",
-          "800": "#2509A7",
-          "900": "#1F0C85",
-          "950": "#0F0145"
-        },
+      
         "green": {
           "50": "#ECFDF5",
           "100": "#D1FAE5",
@@ -183,7 +171,7 @@ module.exports = {
           "900": "#064E3B",
           "950": "#022C22"
         },
-        "red": "#FF3B30",
+        
       },
       backgroundImage: {
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",
