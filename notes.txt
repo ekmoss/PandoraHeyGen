@@ -143,4 +143,260 @@ Improved user feedback for errors and microphone state:
 - **Inactive Button**: White background with blue border
 - **Active Button**: Capgemini blue with white text and subtle animation
 - **Error State**: Red indicator with helpful error message
-- **Status Indicator**: Blue pill showing "Microphone Active" when in use 
+- **Status Indicator**: Blue pill showing "Microphone Active" when in use
+
+# Azure Next.js Deployment - Lessons Learned & Best Practices
+
+## What Finally Worked
+
+After multiple deployment attempts, we successfully deployed our Next.js application to Azure App Service with the following approach:
+
+1. **Pre-built deployment package**
+   - Built the application locally using `npm run build`
+   - Created a deployment package containing the built application
+   - Used `az webapp deployment source config-zip` to deploy directly
+
+2. **Critical environment variables**
+   - Set `PORT=8080` in Azure App Service Configuration
+   - Set `NODE_ENV=production` in Azure App Service Configuration
+
+3. **Server.js configuration**
+   - Used a custom server.js file with Next.js
+   - Default port fallback aligned with Azure expectations (8080)
+   - Hostname set to listen on all interfaces ("0.0.0.0")
+
+4. **Web.config for IIS compatibility**
+   - Used a properly configured web.config file
+   - Included correct handler mappings for the Node.js application
+   - Set up URL rewriting rules to direct all traffic to server.js
+
+## Issues Encountered & Solutions
+
+1. **Deployment timeout with GitHub Actions**
+   - **Issue**: GitHub-based deployments were timing out during npm install
+   - **Solution**: Used direct zip deployment instead of GitHub integration
+
+2. **Application startup failures**
+   - **Issue**: Container would exit during startup
+   - **Solution**: Set correct PORT and NODE_ENV environment variables
+
+3. **Localhost binding issues**
+   - **Issue**: Application bound to localhost instead of all interfaces
+   - **Solution**: Changed server.js hostname from "localhost" to "0.0.0.0"
+
+4. **NextUI package warnings**
+   - **Issue**: Many NextUI packages showed deprecation warnings
+   - **Solution**: These were warnings only, not critical errors
+
+## Future Improvements
+
+1. **Deployment optimizations**
+   - Use output: 'standalone' in next.config.js more effectively
+   - Only deploy the .next/standalone directory contents
+   - Consider using .deployment file to customize deployment steps
+
+2. **Infrastructure as Code**
+   - Create ARM templates or Terraform configurations for the App Service
+   - Include all required environment variables
+   - Set up proper scaling rules based on traffic patterns
+
+3. **CI/CD pipeline improvements**
+   - Set up GitHub Actions with proper timeout settings
+   - Use build artifacts between workflow steps
+   - Implement proper caching for node_modules
+
+4. **Monitoring and diagnostics**
+   - Implement Application Insights for better error tracking
+   - Add custom logging for Next.js server interactions
+   - Create a health check endpoint at /api/health
+
+5. **Performance optimizations**
+   - Configure Azure CDN for static assets
+   - Implement proper caching headers
+   - Consider using Azure Front Door for global distribution
+
+6. **Security enhancements**
+   - Enable HTTPS only
+   - Implement proper CSP headers
+   - Review and update dependencies regularly
+   - Consider using Azure Key Vault for sensitive values
+
+7. **Development workflow**
+   - Create a local development environment that matches Azure
+   - Use Docker to simulate the Azure App Service environment
+   - Implement pre-deployment validation tests
+
+## Azure App Service Node.js Specifics
+
+1. **Environment**
+   - Azure App Service Linux uses Node.js 18.20.5
+   - Data persistence only works in /home directory
+   - Container gets recycled periodically
+
+2. **Deployment**
+   - Kudu handles deployment orchestration
+   - Oryx is used for building Node.js applications
+   - Large deployments benefit from pre-building locally
+
+3. **Logging**
+   - Access logs via Log Stream in Azure Portal
+   - Review /home/LogFiles for detailed logs
+   - Use Application Insights for production monitoring 
+
+
+# Microphone Functionality Improvements for Interactive Avatar
+
+## Initial Problems:
+- Inconsistent microphone activation/deactivation
+- Delays when toggling microphone
+- No visual indication of the microphone initializing state
+- User confusion due to lack of feedback
+
+## Implementation Details:
+
+### 1. Direct Microphone Control
+
+We implemented direct control over the microphone stream rather than solely relying on the SDK's built-in controls:
+typescript
+// Set up state variables
+const [isOriginalMicConnected, setIsOriginalMicConnected] = useState(false);
+const [microphoneStream, setMicrophoneStream] = useState<MediaStream | null>(null);
+const originalMicRef = useRef<MediaStreamTrack | null>(null);
+const [isLoading, setIsLoading] = useState(false);
+// During initialization in STREAM_READY event:
+avatar.current?.on(StreamingEvents.STREAM_READY, (event) => {
+console.log("Stream ready:", event.detail);
+setStream(event.detail);
+// IMPORTANT: We'll manually initialize our microphone control
+// rather than letting the SDK handle it
+setTimeout(async () => {
+try {
+// This gives us a clean slate for microphone control
+if (avatar.current) {
+await avatar.current.stopListening();
+console.log("Temporarily stopped SDK listening");
+// Custom initialization
+setTimeout(async () => {
+const micStream = await navigator.mediaDevices.getUserMedia({
+audio: true,
+video: false
+});
+originalMicRef.current = micStream.getAudioTracks()[0];
+originalMicRef.current.enabled = false;
+setIsOriginalMicConnected(true);
+setMicrophoneStream(micStream);
+console.log("Direct mic control initialized");
+}, 500);
+}
+} catch (e) {
+console.error("Error in custom mic initialization:", e);
+}
+}, 300);
+});
+
+### 2. Explicit Microphone Disabling on Startup
+
+We added code to explicitly disable the microphone when the session starts:
+typescript
+// After starting the avatar session:
+await avatar.current.startVoiceChat();
+setChatMode("voice_mode");
+// Wait for avatar to fully initialize before setting up mic
+await new Promise(resolve => setTimeout(resolve, 1000));
+// Explicitly disable microphone on startup
+try {
+console.log("Explicitly disabling microphone on startup");
+await avatar.current.closeVoiceChat();
+await avatar.current.stopListening();
+console.log("Initial microphone state: disabled");
+} catch (initError) {
+console.error("Error during initial microphone setup:", initError);
+}
+
+### 3. Push-to-Talk Toggle Function with Loading State
+
+We implemented a toggle function that handles the microphone state with proper loading indication:
+typescript
+async function handlePushToTalkToggle() {
+setLastToggleTime(Date.now());
+if (isPushingToTalk) {
+// Turning microphone OFF
+setPushingToTalk(false);
+try {
+if (originalMicRef.current) {
+originalMicRef.current.enabled = false;
+console.log("Original microphone disabled");
+}
+} catch (error) {
+console.error("Error disabling microphone:", error);
+}
+} else {
+// Turning microphone ON
+if (!stream || !avatar.current) return;
+setIsLoading(true);
+setPushingToTalk(true);
+console.log("Preparing to unmute microphone");
+try {
+// Make sure voice chat is closed first
+await avatar.current.closeVoiceChat();
+console.log("Existing voice chat closed");
+// Reduced delay before starting again
+await new Promise(resolve => setTimeout(resolve, 100)); // Reduced from 300ms
+// Start voice chat
+await avatar.current.startVoiceChat();
+console.log("Voice chat started successfully");
+// Removed second delay completely
+// Start listening
+await avatar.current.startListening();
+// Enable the microphone track directly
+if (originalMicRef.current) {
+originalMicRef.current.enabled = true;
+console.log("Original microphone enabled");
+}
+} catch (error) {
+console.error("Error while unmuting:", error);
+setPushingToTalk(false);
+} finally {
+setIsLoading(false);
+}
+}
+}
+
+
+### 4. Optimized Delays
+
+We identified and reduced unnecessary delays in the microphone activation process:
+
+- Reduced first delay from 300ms to 100ms
+- Completely removed the second 300ms delay
+- These changes made the microphone response feel much more immediate
+
+BEFORE:ypescript
+// Small delay before starting again
+await new Promise(resolve => setTimeout(resolve, 300));
+// Start voice chat
+await avatar.current.startVoiceChat();
+// Small delay before starting listening
+await new Promise(resolve => setTimeout(resolve, 300));
+typescript
+// Minimal delay before starting again
+await new Promise(resolve => setTimeout(resolve, 100));
+// Start voice chat
+await avatar.current.startVoiceChat();
+// No delay before starting listening
+
+
+
+## Troubleshooting Tips:
+
+- If WebSocket connection issues occur, they're likely network-related rather than issues with the microphone code
+- Ensure avatar.current exists before calling any methods on it
+- Monitor the console for errors during the microphone initialization process
+- The most common points of failure are during closeVoiceChat(), startVoiceChat(), and startListening() calls
+
+## Results:
+
+- Microphone now consistently turns on/off when the button is pressed
+- Reduced perceived delay when activating the microphone
+- Clear visual indication when the microphone is initializing
+- Better overall user experience with more responsive controls

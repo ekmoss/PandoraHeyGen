@@ -1,0 +1,100 @@
+import { Turret_Road } from "next/font/google";
+
+export interface AppConfig {
+  // Avatar settings
+  avatar: {
+    defaultAvatarId: string;
+    defaultKnowledgeId: string;
+    defaultLanguage: string;
+    defaultChatMode: string;
+    removeBackground: boolean;
+    chromaKeyColour: string;
+    chromaKeyThreshold: number;
+    useBackgroundImage: boolean;
+    backgroundImage: string;
+  };
+
+  // Admin settings
+  admin: {
+    accessCode: string;
+    modalTitle: string;
+  };
+
+  // UI elements
+  ui: {
+    welcomeTitle: string;
+    startButtonText: string;
+    startButtonClass: string;
+    footerText: string;
+    welcomeBackgroundImage: string;
+    loadingBackgroundImage: string;
+    logo: string;
+    logoClass: string;
+    logoStyle: {
+      position: string;
+      size: string;
+      maxHeight: string;
+      filter: string;
+    };
+  };
+
+  // Content arrays
+  content: {
+    conversationStarters: string[];
+    loadingMessages: string[];
+  };
+}
+
+// Default configuration as fallback
+export const defaultConfig: AppConfig = {
+  avatar: {
+    defaultAvatarId: "Rika_Blue_Suit_public",
+    defaultKnowledgeId: "70315509bb9b41efa869975a915f8a0b",
+    defaultLanguage: "en",
+    defaultChatMode: "voice_mode",
+    removeBackground: true,
+    chromaKeyColour: "#00FF00",
+    chromaKeyThreshold: 30,
+    useBackgroundImage: true,
+    backgroundImage: "public\bg-empty-lobby.jpg",
+  },
+  admin: {
+    accessCode: "capgemini123",
+    modalTitle: "Admin Access",
+  },
+  ui: {
+    welcomeTitle: "",
+    startButtonText: "Speak to our AI Assistant",
+    startButtonClass: "bg-gradient-to-tr from-vibrant-blue to-vibrant-blue",
+    footerText: "Powered by Capgemini Applied Innovation Exchange Australia",
+    welcomeBackgroundImage: "/bg-lobby.png",
+    loadingBackgroundImage: "/bg-empty-lobby.jpg",
+    logo: "/capgemini-logo-spade.png",
+    logoClass: "w-44 md:w-56 lg:w-64 object-contain",
+    logoStyle: {
+      position: "top-4 left-4",
+      size: "w-44 md:w-56 lg:w-64",
+      maxHeight: "90px",
+      filter: "drop-shadow(0px 1px 3px rgba(0,0,0,0.2))",
+    },
+  },
+  content: {
+    conversationStarters: [
+      "Who are you and what can you do?",
+      "What's one idea from Technovision I can take to clients in my industry?",
+      "Write a poem for me",
+    ],
+    loadingMessages: [
+      "Initializing your interactive avatar...",
+      "Warming up my neural networks...",
+      "Brewing a cup of digital coffee...",
+      "Polishing my conversation skills...",
+      "Loading Capgemini expertise...",
+      "Thinking outside the algorithmic box...",
+      "Onboarding new conversation topics...",
+      "Calibrating my virtual personality...",
+      "Preparing a digital transformation of this conversation...",
+      "Practicing my thoughtful nodding animation...",
+    ],
+  },
+};
