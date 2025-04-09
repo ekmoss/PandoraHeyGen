@@ -1,0 +1,42 @@
+{
+    "avatar": {
+      "defaultAvatarId": "Elenora_IT_Sitting_public",
+      "defaultKnowledgeId": "70315509bb9b41efa869975a915f8a0b",
+      "defaultLanguage": "en",
+      "defaultChatMode": "voice_mode"
+    },
+
+    "admin": {
+      "accessCode": "capgemini123",
+      "modalTitle": "Admin Access"
+    },
+    "ui": {
+      "welcomeTitle": "GenAI at Capgemini",
+      "startButtonText": "Find out more", 
+      "startButtonClass": "bg-gradient-to-tr from-capgemini-blue to-teal-500",
+      "footerText": "Powered by Capgemini Applied Innovation Exchange Australia",
+      "welcomeBackgroundImage": "/bg-text.png",
+      "loadingBackgroundImage": "/bg-text.jpg"
+    },
+    "content": {
+      "conversationStarters": [
+        "Who are you and what can you do?",
+        "What's one idea from Technovision I can take to clients in my industry?",
+        "Write a poem for me",
+        "Tell me about Capgemini's AI capabilities",
+        "What industries does Capgemini work with?"
+      ],
+      "loadingMessages": [
+        "Initializing your interactive avatar...",
+        "Warming up my neural networks...",
+        "Brewing a cup of digital coffee...",
+        "Polishing my conversation skills...",
+        "Loading Capgemini expertise...",
+        "Thinking outside the algorithmic box...",
+        "Onboarding new conversation topics...",
+        "Calibrating my virtual personality...",
+        "Preparing a digital transformation of this conversation...",
+        "Practicing my thoughtful nodding animation..."
+      ]
+    }
+  }
