@@ -46,12 +46,16 @@ interface InteractiveAvatarProps {
 export default function InteractiveAvatar({
   initialConfig,
 }: InteractiveAvatarProps) {
+  // Add mounting guard at the top
+  const [isMounted, setIsMounted] = useState(false);
+
   // Use the provided configuration
   const config = initialConfig;
 
+  // Move all state declarations here but initialize with safe values
   const [isLoadingSession, setIsLoadingSession] = useState(false);
   const [isLoadingRepeat, setIsLoadingRepeat] = useState(false);
-  const [stream, setStream] = useState<MediaStream>();
+  const [stream, setStream] = useState<MediaStream | undefined>(undefined);
   const [debug, setDebug] = useState<string>();
 
   // Initial state from config
@@ -72,7 +76,7 @@ export default function InteractiveAvatar({
     config.avatar.chromaKeyColour || "#00FF00"
   );
   const [chromaKeyThreshold, setChromaKeyThreshold] = useState<number>(
-    config.avatar.chromaKeyThreshold || 30
+    config.avatar.chromaKeyThreshold || 40
   );
 
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -106,8 +110,8 @@ export default function InteractiveAvatar({
   // Add state to track image loading errors
   const [backgroundImgError, setBackgroundImgError] = useState(false);
   const [loadingImgError, setLoadingImgError] = useState(false);
-  const [avatarBackground, setavatarBackground] = useState<string>(
-    "/bg-office.png" // Set your default background image path here
+  const [avatarBackground, setAvatarBackground] = useState<string>(
+    config.ui.defaultBackgroundImage || "/bg-empty-lobby.jpg"
   );
 
   // Simply use the configured image paths directly
@@ -123,6 +127,13 @@ export default function InteractiveAvatar({
 
   // Add a loading state
   const [isLoading, setIsLoading] = useState(false);
+
+  // Audio recording state
+  const [audioRecorder, setAudioRecorder] = useState<MediaRecorder | null>(
+    null
+  );
+  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   // Add this near the top where other state variables are defined
   const logoPath = useMemo(() => {
@@ -301,7 +312,74 @@ export default function InteractiveAvatar({
     return "";
   }
 
+  // Set mounted state after initial render
+  useEffect(() => {
+    setIsMounted(true);
+    return () => setIsMounted(false);
+  }, []);
+
+  // Protect media stream effects
+  useEffect(() => {
+    if (!isMounted || !stream || !mediaStream.current) return;
+
+    try {
+      mediaStream.current.srcObject = stream;
+      mediaStream.current.onloadedmetadata = () => {
+        if (!mediaStream.current) return;
+        mediaStream.current.play().catch(console.error);
+        setDebug("Playing");
+      };
+    } catch (err) {
+      console.error("Error setting up media stream:", err);
+    }
+  }, [isMounted, stream]);
+
+  // Protect microphone initialization
+  useEffect(() => {
+    if (!isMounted || !stream) return;
+
+    let cleanup = () => {};
+
+    const initializeMicrophone = async () => {
+      try {
+        console.log("Setting up direct microphone control...");
+        const micStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false,
+        });
+
+        if (!isMounted) {
+          micStream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        originalMicRef.current = micStream.getAudioTracks()[0];
+        originalMicRef.current.enabled = false;
+        setIsOriginalMicConnected(true);
+        setMicrophoneStream(micStream);
+
+        cleanup = () => {
+          micStream.getTracks().forEach((track) => track.stop());
+        };
+
+        console.log(
+          "Direct microphone control initialized - initially disabled"
+        );
+      } catch (error) {
+        console.error("Error setting up direct microphone control:", error);
+        setMicError("Microphone access required");
+      }
+    };
+
+    initializeMicrophone();
+
+    return () => cleanup();
+  }, [isMounted, stream]);
+
+  // Protect the startSession function
   async function startSession() {
+    if (!isMounted) return;
+
     setIsLoadingSession(true);
     setError(null);
 
@@ -315,6 +393,8 @@ export default function InteractiveAvatar({
         setIsLoadingSession(false);
         return;
       }
+
+      if (!isMounted) return; // Check mounted state again after async operation
 
       avatar.current = new StreamingAvatar({
         token: newToken,
@@ -385,20 +465,18 @@ export default function InteractiveAvatar({
 
       setData(res);
 
-      // Start the session but DON'T automatically connect to microphone
-      await avatar.current.startVoiceChat();
-
+      // Remove voice chat initialization
       setChatMode("voice_mode");
 
       // IMPORTANT: Wait for the avatar to fully initialize before setting up mic
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
       // Explicitly disable microphone on startup
-      // This ensures the avatar doesn't listen until the user clicks the button
       try {
         console.log("Explicitly disabling microphone on startup");
-        await avatar.current.closeVoiceChat();
-        await avatar.current.stopListening();
+        if (avatar.current) {
+          await avatar.current.stopListening();
+        }
         console.log("Initial microphone state: disabled");
       } catch (initError) {
         console.error("Error during initial microphone setup:", initError);
@@ -409,7 +487,9 @@ export default function InteractiveAvatar({
         "Maya is out of office at the moment. Please try again in a few minutes."
       );
     } finally {
-      setIsLoadingSession(false);
+      if (isMounted) {
+        setIsLoadingSession(false);
+      }
     }
   }
 
@@ -420,12 +500,7 @@ export default function InteractiveAvatar({
 
       return;
     }
-    // speak({ text: text, task_type: TaskType.REPEAT })
-    await avatar.current
-      .speak({ text: text, taskType: TaskType.REPEAT, taskMode: TaskMode.SYNC })
-      .catch((e) => {
-        setDebug(e.message);
-      });
+    await avatar.current?.speak({ text });
     setIsLoadingRepeat(false);
   }
 
@@ -535,77 +610,162 @@ export default function InteractiveAvatar({
     initializeAvatarMicState();
   }, []);
 
-  // Fixed toggle function with loading state
-  const handlePushToTalkToggle = useCallback(async () => {
-    // Debounce
-    const now = Date.now();
-    if (now - lastToggleTime < 500) return;
-    setLastToggleTime(now);
-    setMicError(null);
-
+  // Process recorded audio
+  const processRecordedAudio = async () => {
     try {
-      if (!avatar.current) {
-        console.log("Avatar not available");
-        setMicError("Maya can't hear you right now");
-        return;
+      console.log("Processing recorded audio...");
+      const audioBlob = new Blob(audioChunks, { type: "audio/wav" }); // Using wav format for better compatibility
+      console.log("Created audio blob:", {
+        size: audioBlob.size,
+        type: audioBlob.type,
+      });
+
+      // Create form data for the audio
+      const formData = new FormData();
+      formData.append("file", audioBlob, "recording.wav"); // Changed key from 'audio' to 'file'
+
+      console.log("Sending audio for transcription...");
+      const transcribeResponse = await fetch("/api/transcribe", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!transcribeResponse.ok) {
+        const errorText = await transcribeResponse.text();
+        console.error("Transcription failed:", {
+          status: transcribeResponse.status,
+          statusText: transcribeResponse.statusText,
+          error: errorText,
+        });
+        throw new Error(
+          `Transcription failed: ${transcribeResponse.statusText} - ${errorText}`
+        );
       }
 
-      if (isPushingToTalk) {
-        // MUTE - close voice chat first, then stop listening
-        console.log("Muting microphone");
-        setIsPushingToTalk(false); // Update UI immediately
+      const { text: transcribedText } = await transcribeResponse.json();
+      console.log("Transcription received:", transcribedText);
 
-        try {
-          // First close voice chat
-          await avatar.current.closeVoiceChat();
-          console.log("Voice chat closed successfully");
+      // Get AI response
+      console.log("Requesting AI response...");
+      const chatResponse = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: transcribedText }),
+      });
 
-          // Small delay before stopping listening
-          await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!chatResponse.ok) {
+        const errorText = await chatResponse.text();
+        console.error("Chat response failed:", {
+          status: chatResponse.status,
+          statusText: chatResponse.statusText,
+          error: errorText,
+        });
+        throw new Error(
+          `Chat response failed: ${chatResponse.statusText} - ${errorText}`
+        );
+      }
 
-          // Then stop listening
-          await avatar.current.stopListening();
-          console.log("Listening stopped successfully");
-        } catch (error) {
-          console.error("Error while muting:", error);
-          // Continue despite errors - we've already updated UI
+      const { message: aiResponse } = await chatResponse.json();
+      console.log("AI response received:", aiResponse);
+
+      return { transcribedText, aiResponse };
+    } catch (error) {
+      console.error("Error processing audio:", error);
+      throw error;
+    }
+  };
+
+  // Initialize audio recorder
+  const initializeRecorder = async () => {
+    try {
+      console.log("Initializing audio recorder...");
+
+      // Clean up any existing recorder
+      if (audioRecorder) {
+        audioRecorder.stream.getTracks().forEach((track) => track.stop());
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, {
+        mimeType: "audio/webm",
+        audioBitsPerSecond: 128000,
+      });
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          console.log("Received audio chunk:", {
+            size: e.data.size,
+            type: e.data.type,
+          });
+          setAudioChunks((chunks) => [...chunks, e.data]);
         }
+      };
+
+      // Set a reasonable timeslice for chunks (e.g., 1 second)
+      recorder.start(1000);
+      setAudioRecorder(recorder);
+      console.log("Audio recorder initialized successfully");
+    } catch (error) {
+      console.error("Failed to initialize audio recorder:", error);
+      setMicError("Failed to access microphone");
+      throw error; // Re-throw to be handled by caller
+    }
+  };
+
+  // Fixed toggle function with loading state
+  const handlePushToTalk = async () => {
+    try {
+      if (!isPushingToTalk) {
+        // Start recording
+        console.log("Starting recording...");
+        await initializeRecorder();
+        setIsPushingToTalk(true);
       } else {
-        // UNMUTE with loading state
-        console.log("Preparing to unmute microphone");
-        setIsLoading(true); // Show loading state
+        // Stop recording and process
+        console.log("Stopping recording...");
+        setIsPushingToTalk(false);
+        setIsProcessing(true);
 
-        try {
-          // Make sure voice chat is closed first
-          await avatar.current.closeVoiceChat();
-          console.log("Existing voice chat closed");
+        if (audioRecorder) {
+          try {
+            // Stop the recorder and clean up
+            audioRecorder.stop();
+            const tracks = audioRecorder.stream.getTracks();
+            tracks.forEach((track) => track.stop());
+            console.log("Audio recording stopped and cleaned up");
 
-          // Reduce first delay or remove if possible
-          await new Promise((resolve) => setTimeout(resolve, 50)); // Reduced from 300ms
+            // Process the recorded audio
+            const { transcribedText, aiResponse } =
+              await processRecordedAudio();
 
-          // Start voice chat
-          await avatar.current.startVoiceChat();
-          console.log("Voice chat started successfully");
-
-          // Start listening
-          await avatar.current.startListening();
-          console.log("Listening started successfully");
-
-          // Only update UI after everything is ready
-          setIsPushingToTalk(true);
-          setIsLoading(false);
-        } catch (error) {
-          console.error("Error while unmuting:", error);
-          setMicError("Microphone connection issue");
-          setIsLoading(false);
+            // Have avatar speak the response
+            console.log("Requesting avatar to speak response...");
+            if (!avatar.current) {
+              console.error("Avatar reference not available");
+              return;
+            }
+            await avatar.current.speak({
+              text: aiResponse,
+              taskType: TaskType.REPEAT,
+              taskMode: TaskMode.SYNC,
+            });
+            console.log("Avatar speech completed");
+          } catch (error) {
+            console.error("Error stopping recording:", error);
+            setMicError("Failed to process recording");
+          } finally {
+            // Clean up recorder state
+            setAudioRecorder(null);
+            setAudioChunks([]);
+            setIsProcessing(false);
+          }
         }
       }
     } catch (error) {
-      console.error("Error toggling microphone:", error);
-      setMicError("Failed to toggle microphone");
-      setIsLoading(false);
+      console.error("Error in push-to-talk handler:", error);
+      setIsPushingToTalk(false);
     }
-  }, [isPushingToTalk, lastToggleTime]);
+  };
 
   const handleAdminAccess = () => {
     if (adminAccessCode === adminCode) {
@@ -638,16 +798,6 @@ export default function InteractiveAvatar({
       endSession();
     };
   }, []);
-
-  useEffect(() => {
-    if (stream && mediaStream.current) {
-      mediaStream.current.srcObject = stream;
-      mediaStream.current.onloadedmetadata = () => {
-        mediaStream.current!.play();
-        setDebug("Playing");
-      };
-    }
-  }, [mediaStream, stream]);
 
   useEffect(() => {
     if (stream && chatMode === "voice_mode") {
@@ -684,46 +834,10 @@ export default function InteractiveAvatar({
     };
   }, [stream, chatMode]);
 
-  // Initial setup when stream is ready
-  useEffect(() => {
-    if (stream) {
-      (async () => {
-        try {
-          console.log("Setting up direct microphone control...");
-
-          // Get microphone access
-          const micStream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-            video: false,
-          });
-
-          // Store reference to the original microphone track
-          originalMicRef.current = micStream.getAudioTracks()[0];
-
-          // Start with microphone disabled
-          originalMicRef.current.enabled = false;
-          setIsOriginalMicConnected(true);
-
-          setMicrophoneStream(micStream);
-          console.log(
-            "Direct microphone control initialized - initially disabled"
-          );
-        } catch (error) {
-          console.error("Error setting up direct microphone control:", error);
-          setMicError("Microphone access required");
-        }
-      })();
-    }
-
-    return () => {
-      // Cleanup microphone
-      if (microphoneStream) {
-        microphoneStream.getTracks().forEach((track) => {
-          track.stop();
-        });
-      }
-    };
-  }, [stream]);
+  // Don't render anything until mounted
+  if (!isMounted) {
+    return null;
+  }
 
   return (
     <div className="w-full h-full flex flex-col">
@@ -767,12 +881,16 @@ export default function InteractiveAvatar({
                     fill
                     style={{ objectFit: "cover" }}
                     priority
-                    onLoadingComplete={() =>
+                    onLoad={() =>
                       console.log("Background image loaded successfully")
                     }
-                    onError={() =>
-                      console.error("Background image failed to load")
-                    }
+                    onError={(e) => {
+                      console.error(
+                        "Background image failed to load, using fallback"
+                      );
+                      setAvatarBackground("/bg-empty-lobby.jpg");
+                      setAvatarBackground("/images/bg-lobby-empty.jpg");
+                    }}
                   />
                 </div>
 
@@ -871,7 +989,7 @@ export default function InteractiveAvatar({
                         : "bg-gradient-to-r from-capgemini-blue to-deep-purple-500 text-white"
                     } ${isLoading ? "loading" : ""}`}
                     size="lg"
-                    onPress={handlePushToTalkToggle}
+                    onPress={handlePushToTalk}
                     disabled={isLoading}
                   >
                     <svg

@@ -1,6 +1,7 @@
 import "@/styles/globals.css";
 import clsx from "clsx";
 import { Metadata, Viewport } from "next";
+import Script from "next/script";
 
 import { Providers } from "./providers";
 
@@ -44,9 +45,9 @@ export default function RootLayout({
       lang="en"
       className={`${fontSans.variable} ${fontMono.variable} font-sans`}
     >
-      <head />
       <body className={clsx("min-h-screen bg-background antialiased")}>
         <Providers themeProps={{ attribute: "class", defaultTheme: "dark" }}>
+          <Script src="/test-mic.js" strategy="lazyOnload" />
           <main className="relative flex flex-col h-screen w-screen">
             {children}
           </main>
