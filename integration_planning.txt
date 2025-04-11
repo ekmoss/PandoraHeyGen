@@ -1,0 +1,648 @@
+# HeyGen + Azure OpenAI Integration Planning
+
+## CURRENT IMPLEMENTATION STATUS
+Status: Starting Backend Implementation
+Current Focus: API Structure Setup
+
+### Current Task Breakdown - Backend API
+1. API Endpoints Needed:
+   ```typescript
+   // 1. Speech-to-Text Endpoint
+   POST /api/speech-to-text
+   Body: FormData (audio blob)
+   Response: { text: string }
+
+   // 2. Generate Response Endpoint
+   POST /api/generate-response
+   Body: { text: string }
+   Response: { response: string }
+
+   // 3. Combined Processing Endpoint
+   POST /api/process-voice
+   Body: FormData (audio blob)
+   Response: { response: string }
+   ```
+
+2. Initial Implementation Steps:
+   - [ ] Create basic API route files
+   - [ ] Add error handling middleware
+   - [ ] Set up type definitions
+   - [ ] Add basic request validation
+   - [ ] Implement logging structure
+
+3. Environment Setup:
+   ```env
+   AZURE_SPEECH_KEY=
+   AZURE_SPEECH_REGION=
+   AZURE_OPENAI_KEY=
+   AZURE_OPENAI_ENDPOINT=
+   AZURE_OPENAI_DEPLOYMENT=
+   ```
+
+4. Type Definitions:
+   ```typescript
+   interface ProcessVoiceRequest {
+     audio: Blob;
+     format?: string;
+     language?: string;
+   }
+
+   interface ProcessVoiceResponse {
+     text?: string;          // Transcribed text
+     response: string;       // LLM response
+     error?: string;         // Error message if any
+     processingTime?: number; // For monitoring
+   }
+   ```
+
+### Next Immediate Actions
+1. Create API route files
+2. Implement basic error handling
+3. Add request validation
+4. Set up environment variables
+
+### Questions for Discussion
+- Should we split endpoints or use a single combined endpoint?
+- Do we need to support multiple audio formats?
+- Should we implement rate limiting from the start?
+
+### Active Task List
+1. [ ] Backend Setup
+   - [ ] Create new API endpoint for voice processing
+   - [ ] Set up Azure Speech Services client
+   - [ ] Set up Azure OpenAI client
+   - [ ] Implement basic error handling
+
+2. [ ] Frontend Audio Capture
+   - [ ] Review existing push-to-talk implementation
+   - [ ] Add audio format validation
+   - [ ] Implement progress indicators
+   - [ ] Add error state handling
+
+3. [ ] Service Integration
+   - [ ] Test Azure Speech Services independently
+   - [ ] Test Azure OpenAI independently
+   - [ ] Integrate with HeyGen avatar speak()
+   - [ ] Add basic logging
+
+### Next Actions (In Priority Order)
+1. Create basic backend API structure
+2. Set up Azure service connections
+3. Implement audio capture flow
+4. Add Azure Speech Services integration
+5. Add Azure OpenAI integration
+6. Connect to avatar output
+
+### Questions to Resolve
+1. Backend:
+   - Which Azure Speech Services region to use?
+   - Which Azure OpenAI model to use?
+   - Rate limiting strategy?
+
+2. Frontend:
+   - Audio format requirements?
+   - Progress indicator design?
+   - Error message handling?
+
+### Progress Tracking
+- [✓] Backend API Structure
+- [✓] Text-to-speech endpoint
+- [✓] OpenAI response generation endpoint
+- [✓] Speech-to-text endpoint (implementation in progress)
+- [✓] Azure Services Setup
+  ✓ Environment variables configured
+  ✓ Azure OpenAI package installed
+  ✓ Azure Speech Services SDK integration started
+- InteractiveAvatar Integration (in progress)
+  ✓ Azure OpenAI service client
+  - Audio capture and processing
+  - Push-to-talk flow modification
+
+### Latest Updates
+1. Completed Components:
+   - AudioRecorder class with proper error handling
+   - Azure OpenAI service client
+   - Generate response endpoint
+   - Whisper-based transcription endpoint
+   - Azure OpenAI chat endpoint
+   - Voice recording and transcription UI component
+
+2. Current Implementation Status:
+   ✓ Successfully implemented voice recording with chunks
+   ✓ Integrated Azure Whisper for accurate transcription
+   ✓ Created Azure OpenAI chat endpoint using gpt-4o deployment
+   ✓ Built UI component showing both transcription and AI response
+   ✓ Proper error handling and loading states
+   ✓ Environment variables configured correctly
+
+3. Key Learnings:
+   - Whisper transcription works better with REST API than WebSocket
+   - Processing audio in chunks provides better user experience
+   - Azure OpenAI integration requires specific API version (2024-02-15-preview)
+   - Environment variable naming is critical (AZURE_OPENAI_API_KEY vs AZURE_OPENAI_KEY)
+   - Proper cleanup of audio recording resources prevents memory leaks
+
+4. Next Steps:
+   a. HeyGen Avatar Integration:
+      - Take AI response from chat endpoint
+      - Use HeyGen's speak() method to vocalize response
+      - Implement proper timing between responses
+      - Handle avatar state during speech
+   
+   b. Error Handling Improvements:
+      - Add retry logic for failed API calls
+      - Implement graceful fallbacks
+      - Enhance error messages for better UX
+
+   c. Performance Optimization:
+      - Fine-tune audio chunk size
+      - Optimize API request timing
+      - Implement response caching if needed
+
+5. Current Architecture:
+   ```typescript
+   // Flow:
+   1. VoiceTest component records audio
+   2. Audio sent to /api/transcribe (Whisper)
+   3. Transcribed text sent to /api/chat (GPT-4)
+   4. AI response displayed (pending avatar integration)
+   ```
+
+## Important Implementation Note
+- HeyGen's built-in voice chat mode cannot be customized or overridden
+- Must implement our own complete voice interaction pipeline
+- Will use HeyGen only for avatar visualization and final speech output
+
+## Current Architecture Analysis
+- HeyGen's streaming avatar currently handles both speech-to-text and response generation
+- The avatar uses built-in LLM capabilities for responses
+- Voice chat is managed through StreamingAvatar SDK events
+- LIMITATION: Built-in voice chat cannot be customized with external LLMs
+
+## Custom Voice Pipeline Needed
+1. Audio Capture:
+   - Use MediaRecorder API for voice input
+   - Implement our own push-to-talk or voice activation
+   - Handle audio streaming efficiently
+
+2. Speech-to-Text:
+   - Use Azure Speech Services for transcription
+   - Implement real-time streaming for lower latency
+   - Handle multiple languages if needed
+
+3. Response Generation:
+   - Process transcribed text with Azure OpenAI
+   - Implement custom prompt engineering
+   - Stream responses for better UX
+
+4. Avatar Integration:
+   - Use HeyGen's speak() method for output
+   - Maintain emotion/voice settings
+   - Handle proper timing and state management
+
+## Key Components from HeyGen Docs
+
+### 1. OpenAI Assistant Integration
+```typescript
+export class OpenAIAssistant {
+  private client: OpenAI;
+  private assistant: any;
+  private thread: any;
+
+  constructor(apiKey: string) {
+    this.client = new OpenAI({ apiKey });
+  }
+
+  async getResponse(userMessage: string): Promise<string> {
+    // Process message and get response
+    return response;
+  }
+}
+```
+
+### 2. Audio Handling Architecture
+```typescript
+export class AudioRecorder {
+  private mediaRecorder: MediaRecorder | null = null;
+  private audioChunks: Blob[] = [];
+  
+  async startRecording() {
+    // Handle recording start
+  }
+  
+  async stopRecording() {
+    // Handle recording stop and transcription
+  }
+}
+```
+
+## Latest Discovery - Alpha Realtime API
+- HeyGen has released an alpha version of their Realtime API
+- Specifically designed for external LLM integration
+- Uses WebSocket for low-latency communication
+- Supports direct audio buffer manipulation
+- Currently in alpha, may have breaking changes
+
+### Key Realtime API Features:
+```typescript
+// Example WebSocket Events
+{
+  "type": "agent.audio_buffer_append",
+  "event_id": "<event_id>",
+  "audio": "<base64_encoded_PCM_16bit_24khz_audio>"
+}
+```
+- Direct audio buffer control
+- Interrupt capability
+- Listening state management
+- Low latency websocket communication
+
+### Architectural Implications:
+1. Could potentially skip building our own audio pipeline
+2. Direct integration with Azure services becomes simpler
+3. Lower latency than using speak() method
+4. More granular control over avatar state
+
+## Revised Architecture Options
+
+### Option 1 - Use Alpha Realtime API:
+Advantages:
+- Purpose-built for external LLM integration
+- Lower latency
+- More control over avatar state
+- Simpler integration architecture
+
+Risks:
+- Alpha status - breaking changes possible
+- Limited support available
+- May need fallback mechanism
+
+### Option 2 - Original Custom Pipeline:
+Advantages:
+- More stable, using released APIs
+- Full control over implementation
+- Better support available
+
+Disadvantages:
+- Higher latency
+- More complex implementation
+- Less granular control
+
+## Recommended Approach
+1. Start with Option 1 (Realtime API):
+   - Lower latency and better user experience
+   - Purpose-built for our use case
+   - Can fall back to Option 2 if needed
+
+2. Implementation Phases:
+   a. Basic Integration:
+      - WebSocket connection setup
+      - Azure Speech Services integration
+      - Simple audio buffer handling
+   
+   b. Enhanced Features:
+      - Interrupt handling
+      - State management
+      - Error recovery
+   
+   c. Production Hardening:
+      - Fallback mechanism to Option 2
+      - Comprehensive error handling
+      - Performance monitoring
+
+## Technical Requirements
+
+1. WebSocket Handling:
+```typescript
+interface WebSocketConfig {
+  endpoint: string;
+  sessionId: string;
+  reconnectStrategy: ReconnectStrategy;
+}
+```
+
+2. Audio Processing:
+- PCM 16-bit
+- 24kHz sample rate
+- 1-4 second segments recommended
+
+3. State Management:
+- Track avatar state (idle, listening, speaking)
+- Handle interrupts
+- Manage audio buffer
+
+4. Azure Integration:
+- Speech Services for STT
+- OpenAI for response generation
+- Consider streaming responses
+
+## Security & Stability Updates
+1. Security:
+- Move all API key handling to backend
+- Implement proper WebSocket security
+- Add request validation
+
+2. Error Handling:
+- WebSocket connection issues
+- Audio processing errors
+- Service interruptions
+
+3. Monitoring:
+- WebSocket connection status
+- Audio buffer health
+- Service latency metrics
+
+## Next Steps
+1. Verify alpha API access
+2. Create proof of concept with WebSocket
+3. Test audio buffer handling
+4. Integrate Azure services
+5. Implement fallback mechanism
+6. Add monitoring and error handling
+
+## Notes
+- Need to handle Azure OpenAI rate limits
+- Consider implementing response caching
+- Plan for proper error message handling
+- Consider implementing a fallback chain
+- Monitor token usage and costs
+
+## Security Considerations
+- Store Azure keys securely
+- Implement proper authentication
+- Consider implementing request validation
+- Monitor for abuse patterns
+
+## New Investigation Areas
+
+### Backend Integration (from pipecat-demo)
+- Python-based backend (3.10+)
+- Uses multiple AI services:
+  - ElevenLabs for TTS
+  - OpenAI for LLM
+  - Deepgram for STT
+- Could be adapted for Azure services:
+  - Azure Speech Services instead of Deepgram
+  - Azure OpenAI instead of OpenAI
+  - Azure TTS instead of ElevenLabs
+
+### Areas Needing Deep Dive
+1. WebSocket Implementation:
+   - How they handle connection management
+   - Event structure and typing
+   - Error handling and reconnection
+
+2. Audio Processing:
+   - Buffer management
+   - Streaming implementation
+   - Format requirements (PCM 16-bit, 24kHz)
+
+3. Service Integration:
+   - How services are coordinated
+   - Latency optimization
+   - Error handling between services
+
+4. State Management:
+   - Avatar state tracking
+   - Connection state
+   - Service health monitoring
+
+### Key Files to Investigate Later
+1. Frontend:
+   - WebSocket connection setup
+   - Audio capture and streaming
+   - UI state management
+
+2. Backend:
+   - Service coordination
+   - Audio processing pipeline
+   - Error handling and recovery
+
+### Questions to Answer
+1. Technical:
+   - How is audio streaming implemented?
+   - What's their WebSocket reconnection strategy?
+   - How do they handle service failures?
+
+2. Architecture:
+   - Can we replicate their architecture with Azure services?
+   - What parts need modification for our use case?
+   - How to implement proper fallback mechanisms?
+
+3. Performance:
+   - What's their latency profile?
+   - How do they handle audio buffering?
+   - What optimizations are possible?
+
+## Implementation Strategy Updates
+
+1. Phase 1 - Basic Integration:
+   - Start with WebSocket connection
+   - Implement basic audio capture
+   - Setup Azure service connections
+
+2. Phase 2 - Core Features:
+   - Audio streaming
+   - Real-time transcription
+   - Basic response generation
+
+3. Phase 3 - Optimization:
+   - Latency improvements
+   - Error handling
+   - Fallback mechanisms
+
+4. Phase 4 - Production Readiness:
+   - Monitoring
+   - Logging
+   - Performance optimization
+
+## Next Investigation Steps
+1. Deep dive into pipecat WebSocket implementation
+2. Analyze their audio processing pipeline
+3. Study their service coordination approach
+4. Review error handling strategies
+
+## Migration Considerations
+1. Service Replacements:
+   - Deepgram → Azure Speech Services
+   - OpenAI → Azure OpenAI
+   - ElevenLabs → Azure TTS
+
+2. Architecture Adjustments:
+   - WebSocket management
+   - State handling
+   - Error recovery
+
+3. Performance Optimization:
+   - Buffer sizes
+   - Streaming thresholds
+   - Connection management
+
+## Initial Implementation Strategy (Stable Path)
+- Focus on stable, proven APIs first
+- Demonstrate basic Azure OpenAI integration
+- Use existing HeyGen SDK features
+
+### Phase 1 - Basic Azure Integration
+1. Core Components:
+   - Keep existing UI and push-to-talk
+   - Use MediaRecorder for audio capture
+   - Azure Speech Services for STT
+   - Azure OpenAI for response generation
+   - HeyGen's speak() for avatar output
+
+2. Implementation Steps:
+   ```typescript
+   // Basic flow
+   async function handleVoiceInput(audioBlob: Blob) {
+     // 1. Convert speech to text
+     const text = await azureSpeechServices.transcribe(audioBlob);
+     
+     // 2. Get response from Azure OpenAI
+     const response = await azureOpenAI.generateResponse(text);
+     
+     // 3. Have avatar speak response
+     await avatar.speak({ text: response });
+   }
+   ```
+
+3. Success Criteria:
+   - Working voice input → Azure OpenAI → Avatar response flow
+   - Acceptable latency (under 3 seconds end-to-end)
+   - Stable operation
+
+### Minimal Required Changes
+1. Backend:
+   - Azure Speech Services endpoint
+   - Azure OpenAI configuration
+   - Simple API route for processing
+
+2. Frontend:
+   - Audio capture handling
+   - Progress indicators
+   - Error handling
+
+3. Configuration:
+   - Environment variables for Azure services
+   - Fallback error messages
+   - Logging setup
+
+### Next Steps
+1. Set up Azure services and test independently
+2. Create basic audio capture → Azure STT flow
+3. Implement Azure OpenAI integration
+4. Connect to HeyGen avatar output
+5. Add error handling and user feedback
+
+### Future Considerations
+- Document performance metrics for comparison
+- Identify bottlenecks for future optimization
+- Gather requirements for realtime API version 
+
+## Critical Architecture Learnings
+
+### Next.js 13+ Component Architecture
+1. Server-First Principles:
+   - Pages should be server components by default
+   - Only use "use client" for components that truly need browser APIs
+   - Use dynamic imports with { ssr: false } for client components
+   - Keep pages as server components and dynamically import interactive components
+
+2. Common Pitfalls to Avoid:
+   - Don't add "use client" to page components
+   - Don't try to fix hydration issues by making everything client-side
+   - Don't mix server and client state in the same component
+
+3. Debugging Process for Hydration Issues:
+   1. Check component architecture first
+   2. Look for client/server component mismatches
+   3. Verify dynamic imports are properly configured
+   4. Only then investigate specific errors
+
+4. Best Practices:
+   ```typescript
+   // Good - Page as server component
+   // app/page.tsx
+   import dynamic from 'next/dynamic'
+   
+   const InteractiveComponent = dynamic(
+     () => import('@/components/InteractiveComponent'),
+     { ssr: false }
+   )
+   
+   export default function Page() {
+     return <InteractiveComponent />
+   }
+   
+   // Bad - Don't do this
+   // app/page.tsx
+   'use client'
+   import InteractiveComponent from '@/components/InteractiveComponent'
+   ```
+
+These learnings came from debugging hydration issues in our voice integration implementation. Following these principles helps prevent common issues and maintains better performance through proper server/client component separation.
+
+### Latest Major Achievement (March 19, 2024)
+Successfully implemented complete voice interaction pipeline:
+1. Custom audio recording with MediaRecorder
+2. Transcription using Azure Whisper
+3. Response generation with Azure OpenAI (gpt-4o)
+4. Avatar speech using HeyGen's speak() with TaskType.REPEAT
+   - Critical: Using REPEAT instead of TALK ensures exact response playback
+   - Prevents unwanted interpretation by HeyGen's built-in AI
+
+### Priority List for Tomorrow (March 20, 2024)
+
+1. Performance Optimization
+   - [ ] Optimize audio chunk size for faster processing
+   - [ ] Investigate parallel processing of audio chunks
+   - [ ] Add response caching for frequently asked questions
+   - [ ] Profile and optimize API response times
+   - [ ] Consider streaming responses from Azure OpenAI
+
+2. Background/Visual Issues
+   - [ ] Fix background image loading fallback logic
+   - [ ] Resolve chroma key transparency glitches
+   - [ ] Optimize background image preloading
+   - [ ] Implement smoother transitions between states
+   - [ ] Add loading placeholder for background images
+
+3. Error Handling & Reliability
+   - [ ] Add retry logic for failed API calls
+   - [ ] Implement graceful degradation for service outages
+   - [ ] Enhance error messages for better user experience
+   - [ ] Add telemetry for monitoring system health
+   - [ ] Implement session recovery after disconnection
+
+4. User Experience Improvements
+   - [ ] Add visual feedback during audio processing
+   - [ ] Implement progress indicators for each stage
+   - [ ] Add subtle animations for state transitions
+   - [ ] Improve microphone permission handling
+   - [ ] Consider adding a "processing" animation for avatar
+
+5. Code Quality & Maintenance
+   - [ ] Refactor audio handling into separate component
+   - [ ] Add comprehensive error logging
+   - [ ] Document all major component interactions
+   - [ ] Add unit tests for critical paths
+   - [ ] Create monitoring dashboard for API endpoints
+
+### Current Architecture (Updated)
+```typescript
+// Flow:
+1. User holds push-to-talk button
+2. MediaRecorder captures audio in chunks
+3. On release:
+   - Audio sent to /api/transcribe (Azure Whisper)
+   - Transcribed text sent to /api/chat (Azure OpenAI)
+   - Response passed to avatar.speak() with TaskType.REPEAT
+4. Avatar speaks exact response with lip sync
+```
+
+### Next Major Features to Consider
+1. Async response mode for non-blocking operations
+2. Response streaming for faster initial playback
+3. Emotion detection for avatar expression matching
+4. Multi-language support with automatic detection
+5. Voice emotion matching with response content

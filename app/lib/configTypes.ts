@@ -1,6 +1,7 @@
 import { Turret_Road } from "next/font/google";
 
 export interface AppConfig {
+  apiUrl: string;
   // Avatar settings
   avatar: {
     defaultAvatarId: string;
@@ -28,6 +29,7 @@ export interface AppConfig {
     footerText: string;
     welcomeBackgroundImage: string;
     loadingBackgroundImage: string;
+    defaultBackgroundImage: string;
     logo: string;
     logoClass: string;
     logoStyle: {
@@ -47,6 +49,7 @@ export interface AppConfig {
 
 // Default configuration as fallback
 export const defaultConfig: AppConfig = {
+  apiUrl: "https://api.heygen.com",
   avatar: {
     defaultAvatarId: "Rika_Blue_Suit_public",
     defaultKnowledgeId: "70315509bb9b41efa869975a915f8a0b",
@@ -54,9 +57,9 @@ export const defaultConfig: AppConfig = {
     defaultChatMode: "voice_mode",
     removeBackground: true,
     chromaKeyColour: "#00FF00",
-    chromaKeyThreshold: 30,
+    chromaKeyThreshold: 20,
     useBackgroundImage: true,
-    backgroundImage: "public\bg-empty-lobby.jpg",
+    backgroundImage: "/bg-empty-lobby.jpg",
   },
   admin: {
     accessCode: "capgemini123",
@@ -69,6 +72,7 @@ export const defaultConfig: AppConfig = {
     footerText: "Powered by Capgemini Applied Innovation Exchange Australia",
     welcomeBackgroundImage: "/bg-lobby.png",
     loadingBackgroundImage: "/bg-empty-lobby.jpg",
+    defaultBackgroundImage: "/bg-empty-lobby.jpg",
     logo: "/capgemini-logo-spade.png",
     logoClass: "w-44 md:w-56 lg:w-64 object-contain",
     logoStyle: {

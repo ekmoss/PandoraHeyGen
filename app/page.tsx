@@ -1,16 +1,18 @@
-import { getConfig } from "@/app/lib/configService";
-import InteractiveAvatar from "@/components/InteractiveAvatar";
+import { defaultConfig } from "@/app/lib/configTypes";
+import dynamic from "next/dynamic";
 
-export default async function App() {
-  // Fetch config in server component (server-side)
-  const config = await getConfig();
+// Import InteractiveAvatar as a client component with no SSR
+const InteractiveAvatar = dynamic(
+  () => import("@/components/InteractiveAvatar"),
+  { ssr: false }
+);
 
+export default function App() {
   return (
     <div className="w-screen h-screen overflow-hidden relative bg-deep-purple-950">
-      {/* Background image will be handled in the InteractiveAvatar component */}
       <div className="w-full h-full flex items-center justify-center">
         <div className="w-full h-full max-h-screen">
-          <InteractiveAvatar initialConfig={config} />
+          <InteractiveAvatar initialConfig={defaultConfig} />
         </div>
       </div>
     </div>
