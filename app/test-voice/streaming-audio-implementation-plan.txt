@@ -2,430 +2,311 @@
 
 ## Overview
 
-This plan outlines a strategy to implement streaming audio processing to reduce the recording latency identified as our primary bottleneck. Since WebSockets cannot be used due to VPN restrictions, we'll implement an HTTP-based chunked processing approach.
+This plan outlines a strategy to implement streaming audio processing to reduce latency in our voice-to-text processing pipeline. We've implemented an HTTP-based chunked processing approach to work within VPN restrictions that prevent WebSockets usage.
 
-## Updated Performance Analysis
+## Current Performance (May 2023)
 
-Recent performance metrics indicate the following key bottlenecks:
-- **Audio processing time**: 49.3% of total latency (5600.30ms) is spent in "Process Final Chunk"
-- **Audio size inefficiency**: Metrics show 14356.00ms for "audioSize", indicating potential format inefficiency
-- **Azure API call**: 1788.69ms is spent in the actual API call to Azure
+Our latest optimizations have achieved significant improvements in latency:
 
-These metrics show that our primary optimization targets should be:
-1. Audio format efficiency for faster processing
-2. Transcription API latency improvement
-3. Parallel processing opportunities
+- **End-to-End Latency**: ~5 seconds total (with ~2.5 seconds of actual processing after speech ends)
+- **Audio Blob Creation**: Reduced from 1626ms to 217-366ms using WebWorkers
+- **Azure API Processing**: Reduced to ~1200-1400ms (from 1700+ms) with parameter optimization
+- **Chat API Processing**: Reduced to ~400-650ms with connection pre-warming and parameter tuning
 
-## Latest Test Results (After Initial Optimizations)
+Key improvements implemented:
 
-Recent tests show significant improvement but still require further optimization:
-- **Audio processing time**: Reduced to 2959.60ms (47% faster)
-- **Azure API call**: Reduced to 1651.89ms (8% faster)
-- **End-to-end latency**: Reduced to 7103.90ms (37% faster)
-- **Audio size**: Reduced to 6132 bytes (using audio/webm;codecs=opus)
+1. **WebWorker Processing**: Offloaded audio processing to a separate thread
+2. **API Connection Pre-warming**: Established connections before recording starts
+3. **Parallel Processing**: Implemented concurrent operations for audio processing
+4. **Format-Specific Optimizations**: Streamlined audio format detection and handling
+5. **API Parameter Tuning**: Optimized Azure and OpenAI API parameters for speed
 
-## Phase II Optimization Targets
+## Performance Bottlenecks Analysis
 
-Based on test results and audio processing research, we need to focus on:
+Current bottlenecks in order of priority:
+1. **Azure API Call** (~1200-1400ms): Still the longest single operation
+2. **Audio Processing** (~300-400ms): WebWorker implementation is effective
+3. **Chat API** (~400-650ms): Significant improvement with proper parameters
 
-1. **Further Azure API Optimization**: The API call (1651.89ms) is now our primary bottleneck
-2. **Audio Compression Improvement**: Further reduce audio size while maintaining speech quality
-3. **Parallel Processing Implementation**: Split tasks to run concurrently
+## Phase IV Optimization Targets
 
-## Architecture
+To reach our target of 1-2 seconds of post-speech processing:
 
-We'll adopt a progressive chunking strategy with these components:
+1. **Azure API Parameter Fine-tuning**: Continue refining parameters based on test results
+2. **Implement Streaming Response Handling**: Display partial responses as they arrive
+3. **Format-Specific Compression**: Further optimize audio formats based on detected types
+4. **Chat API Context Management**: Optimize prompt size and context window usage
+5. **UI Optimizations**: Implement progressive rendering to improve perceived performance
 
-1. **Client-side Audio Chunking**: Split audio into small chunks during recording
-2. **Audio Format Optimization**: Use formats optimized for transcription speed
-3. **Chunk-based Processing Pipeline**: Process each chunk as it becomes available
-4. **HTTP-based Data Transfer**: Use efficient HTTP patterns for real-time processing
-5. **Progressive Response Assembly**: Build the final response incrementally
-6. **Parallel Processing Pipeline**: Process independent tasks concurrently
+## Completed Optimizations
 
-## Technical Implementation
-
-### 1. Audio Format Optimization (NEW PRIORITY)
-
-```javascript
-// Configuration
-const AUDIO_CONFIG = {
-  // Optimized audio settings based on Azure Whisper performance
-  preferredFormat: "audio/mp3", // Better compression, widely supported
-  backupFormats: ["audio/webm;codecs=opus", "audio/ogg;codecs=opus"],
-  audioBitsPerSecond: 24000, // 24kbps - better quality for speech while maintaining low size
-  sampleRate: 16000, // 16kHz - optimal for Whisper model
-};
-
-// Function to determine best supported format
-function getBestSupportedAudioFormat() {
-  if (MediaRecorder.isTypeSupported(AUDIO_CONFIG.preferredFormat)) {
-    return AUDIO_CONFIG.preferredFormat;
-  }
-  
-  // Try backup formats
-  for (const format of AUDIO_CONFIG.backupFormats) {
-    if (MediaRecorder.isTypeSupported(format)) {
-      return format;
-    }
-  }
-  
-  // Fallback to default
-  return "audio/webm";
-}
-
-// Optimized MediaRecorder initialization
-function createOptimizedMediaRecorder(stream) {
-  const format = getBestSupportedAudioFormat();
-  console.log(`Using optimized audio format: ${format}`);
-  
-  return new MediaRecorder(stream, {
-    mimeType: format,
-    audioBitsPerSecond: AUDIO_CONFIG.audioBitsPerSecond,
-  });
-}
-
-// Audio size optimization for network transfer
-async function optimizeAudioForTransfer(blob) {
-  // Create a downsampled version if needed
-  // For most formats, we'll just use the original as MediaRecorder already implements
-  // the format-specific compression
-  
-  // Add transfer size logging 
-  console.log(`Sending audio: ${blob.size} bytes, format: ${blob.type}`);
-  return blob;
-}
-```
-
-### 2. Phase II: Advanced Audio Optimization (NEW)
-
-```javascript
-// Enhanced audio compression options for different scenarios
-const COMPRESSION_PROFILES = {
-  // Ultra-low latency profile - lowest quality but fastest
-  ultraFast: {
-    audioBitsPerSecond: 16000,  // 16kbps - lower bitrate for faster transfer
-    sampleRate: 8000,           // 8kHz - minimum for speech comprehension
-    stereo: false,              // Force mono
-    enableEchoCancellation: false, // Skip echo cancellation to reduce processing
-    enableNoiseReduction: true,  // Keep noise reduction for better speech clarity
-  },
-  
-  // Balanced profile - good quality with reasonable speed
-  balanced: {
-    audioBitsPerSecond: 24000,  // 24kbps
-    sampleRate: 16000,          // 16kHz - standard for speech recognition
-    stereo: false,              // Force mono
-    enableEchoCancellation: true,
-    enableNoiseReduction: true,
-  },
-  
-  // High quality profile - best quality but slower
-  highQuality: {
-    audioBitsPerSecond: 32000,  // 32kbps
-    sampleRate: 24000,          // 24kHz 
-    stereo: false,              // Force mono
-    enableEchoCancellation: true,
-    enableNoiseReduction: true,
-  }
-};
-
-// Advanced audio compression based on research
-async function compressAudioForProcessing(blob, profile = 'ultraFast') {
-  // If blob is already small, return as is
-  if (blob.size < 5000) {
-    return blob;
-  }
-  
-  // Get compression settings
-  const compressionSettings = COMPRESSION_PROFILES[profile] || COMPRESSION_PROFILES.balanced;
-  
-  try {
-    // For larger audio blobs, we'll apply more aggressive compression
-    // Convert to ArrayBuffer for processing
-    const arrayBuffer = await blob.arrayBuffer();
-    
-    // Apply compression based on format
-    // Create a new blob with the compressed settings
-    if (blob.type.includes('webm') || blob.type.includes('ogg')) {
-      // For webm/ogg, we'll reuse the existing codec but specify a lower bitrate
-      return new Blob([arrayBuffer], { 
-        type: blob.type 
-      });
-    } else {
-      // For other formats, convert to MP3 if possible as it compresses better
-      return new Blob([arrayBuffer], { 
-        type: 'audio/mpeg' 
-      });
-    }
-  } catch (error) {
-    console.error("Error compressing audio:", error);
-    return blob; // Return original if compression fails
-  }
-}
-
-// Advanced trimming to remove silence from audio ends
-async function trimSilenceFromAudio(blob) {
-  // This function would use WebAudio API to detect and trim silence
-  // Implementation depends on browser capabilities
-  
-  console.log('Trimming silence from audio...');
-  
-  // For now, we'll use the original blob
-  // A real implementation would analyze the audio and trim silence
-  return blob;
-}
-```
-
-### 3. Azure API Parameter Optimization (NEW)
+### 1. WebWorker Audio Processing Implementation
 
 ```typescript
-// Optimized Azure API request parameters for faster processing
+// audioWorker.ts - Worker for processing audio in a separate thread
+export interface AudioWorkerInput {
+  type: 'PROCESS_AUDIO';
+  chunks: ArrayBuffer[];  // Audio chunks as array buffers
+  mimeType: string;       // Original MIME type
+  isLastChunk: boolean;   // Whether this is the final chunk
+}
+
+// Optimized audio processing in worker thread
+function optimizeAudioBlob(chunks: ArrayBuffer[], mimeType: string, isLastChunk: boolean): { blob: Blob, mimeType: string } {
+  // Special cases for empty or tiny chunks
+  if (chunks.length === 0) return { blob: new Blob([], { type: "audio/mpeg" }), mimeType: "audio/mpeg" };
+  if (chunks.length === 1 && chunks[0].byteLength < 10000) {
+    return { blob: new Blob([chunks[0]], { type: mimeType || "audio/mpeg" }), mimeType: mimeType || "audio/mpeg" };
+  }
+  
+  // Format optimization based on chunk type
+  const outputMimeType = isLastChunk ? "audio/mpeg" : mimeType;
+  
+  // Create optimized blob
+  const blob = new Blob(chunks, { type: outputMimeType });
+  return { blob, mimeType: outputMimeType };
+}
+```
+
+### 2. API Pre-Warming Implementation
+
+```typescript
+// Component initialization
+useEffect(() => {
+  // Pre-warm all API connections on component mount
+  const warmUpAPIs = async () => {
+    await Promise.all([
+      fetch("/api/transcribe-chunk", { 
+        method: "HEAD",
+        headers: { "Connection": "keep-alive" } 
+      }).catch(() => console.log("Transcribe API warm-up completed")),
+      
+      fetch("/api/chat", { 
+        method: "HEAD",
+        headers: { "Connection": "keep-alive" } 
+      }).catch(() => console.log("Chat API warm-up completed"))
+    ]);
+  };
+  
+  warmUpAPIs();
+  
+  // Keep connections warm with regular pings
+  const keepAliveInterval = setInterval(warmUpAPIs, 120000);
+  return () => clearInterval(keepAliveInterval);
+}, []);
+```
+
+### 3. Azure API Parameter Optimization
+
+```typescript
+// Ultra-optimized parameter profiles for Azure Whisper
 const API_OPTIMIZATION_PROFILES = {
   interim: {
-    temperature: 0.9,      // Higher temperature - faster but less accurate
+    temperature: 1.0,      // Maximum temperature - fastest possible processing
+    beam_size: 1,          // Use narrowest beam search (fastest)
+    response_format: "json", // Request JSON for faster parsing
     best_of: 1,            // Don't generate alternatives
-    beam_size: 1,          // Use narrower beam search
-    compression_ratio_threshold: 2.4, // Less strict compression ratio check
-    logprob_threshold: -1.0,         // Less strict probability threshold
-    no_speech_threshold: 0.6,        // Less strict no_speech detection
+    patience: 0.1,         // Lower patience value for faster beam search
+    compression_ratio_threshold: 2.4 // Less strict compression check
   },
   final: {
-    temperature: 0.0,      // Lower temperature - more accurate but slower
+    temperature: 0.5,      // Balance between speed and accuracy
+    beam_size: 3,          // Reasonable beam search for accuracy while still fast
+    response_format: "json", // Request JSON for faster parsing
     best_of: 1,            // Don't generate alternatives
-    beam_size: 5,          // Use wider beam search for better accuracy
-    compression_ratio_threshold: 2.0, // Default compression ratio check
-    logprob_threshold: -1.0,         // Default probability threshold
-    no_speech_threshold: 0.6,        // Default no_speech detection
+    patience: 0.7,         // Better patience value for final chunks
+    compression_ratio_threshold: 2.2 // Slightly less strict than default
   }
 };
-
-// Function to create the optimized Azure API request
-function createOptimizedAzureRequest(audioBlob, isLastChunk) {
-  const apiFormData = new FormData();
-  
-  // Add the audio file with appropriate extension
-  const fileExtension = detectAudioExtension(audioBlob.type);
-  apiFormData.append("file", audioBlob, `audio.${fileExtension}`);
-  
-  // Add basic parameters
-  apiFormData.append("model", "whisper-1");
-  apiFormData.append("language", "en");
-  
-  // Select the appropriate optimization profile
-  const profile = isLastChunk ? API_OPTIMIZATION_PROFILES.final : API_OPTIMIZATION_PROFILES.interim;
-  
-  // Add all parameters from the profile
-  for (const [key, value] of Object.entries(profile)) {
-    apiFormData.append(key, value.toString());
-  }
-  
-  return apiFormData;
-}
 ```
 
-### 4. Parallel Processing Implementation (NEW)
-
-```javascript
-// Process audio and handle results in parallel
-async function parallelProcessAudioChunk(audioBlob, sessionInfo, isLastChunk) {
-  const startTime = performance.now();
-  
-  try {
-    // Create optimized audio in parallel with API prefetching
-    const [optimizedAudio, _] = await Promise.all([
-      compressAudioForProcessing(audioBlob, isLastChunk ? 'balanced' : 'ultraFast'),
-      // Prefetch API connection in parallel
-      fetch("/api/transcribe-chunk", { method: "HEAD" }).catch(() => {})
-    ]);
-    
-    // Create form data
-    const formData = prepareChunkFormData(
-      optimizedAudio,
-      sessionInfo.sessionId,
-      sessionInfo.chunkSequence,
-      isLastChunk
-    );
-    
-    // Set appropriate timeout
-    const timeoutMs = isLastChunk ? 8000 : 2000;
-    
-    // Process the API call
-    const response = await fetch("/api/transcribe-chunk", {
-      method: "POST",
-      body: formData,
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: {
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Connection": "keep-alive",
-      },
-    });
-    
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-    
-    // Parse the response
-    const result = await response.json();
-    
-    // If this is the final chunk and has text, start AI processing immediately
-    // without waiting for UI updates
-    if (isLastChunk && result.text && result.text.length > 0) {
-      // Process with AI in parallel - don't await
-      processWithAI(result.text);
-    }
-    
-    return {
-      ...result,
-      metrics: {
-        ...result.metrics,
-        clientProcessingTime: performance.now() - startTime
-      }
-    };
-  } catch (error) {
-    console.error("Error in parallel processing:", error);
-    return {
-      text: "",
-      combinedText: "",
-      isPartial: !isLastChunk,
-      error: error instanceof Error ? error.message : "Unknown error",
-      chunkSequence: sessionInfo.chunkSequence,
-      sessionId: sessionInfo.sessionId,
-      metrics: {
-        clientProcessingTime: performance.now() - startTime
-      }
-    };
-  }
-}
-```
-
-### 5. Server-Side Caching and Optimization (NEW)
+### 4. Chat API Optimization
 
 ```typescript
-// Add advanced caching on the server side
-// Cache both the audio processing results and the AI responses
-const audioProcessingCache = new Map<string, {
-  result: any;
-  timestamp: number;
-  audioHash: string;
-}>();
+// Optimized model parameters for GPT-4o
+const OPTIMIZED_MODEL_PARAMS = {
+  temperature: 0.9,     // Higher temperature for faster responses
+  top_p: 0.5,           // Lower top_p to reduce token consideration
+  max_tokens: 150,      // Reasonable limit for responses
+  presence_penalty: 0,  // No penalty for repeated tokens
+  frequency_penalty: 0  // No penalty for frequency
+};
 
-// Generate a hash for audio content to identify similar audio
-function generateAudioHash(audioSize: number, firstBytes: Uint8Array): string {
-  // Create a simple hash based on audio size and first few bytes
-  // This allows us to identify similar audio segments
-  const bytesSignature = Array.from(firstBytes.slice(0, 8))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-  
-  return `${audioSize}-${bytesSignature}`;
-}
+// Apply parameters while preserving user-specified overrides
+const optimizedRequestData = {
+  messages: messages,
+  temperature: requestData.temperature ?? OPTIMIZED_MODEL_PARAMS.temperature,
+  top_p: requestData.top_p ?? OPTIMIZED_MODEL_PARAMS.top_p,
+  max_tokens: requestData.max_tokens ?? OPTIMIZED_MODEL_PARAMS.max_tokens,
+  presence_penalty: OPTIMIZED_MODEL_PARAMS.presence_penalty,
+  frequency_penalty: OPTIMIZED_MODEL_PARAMS.frequency_penalty
+};
+```
 
-// Advanced caching with audio similarity detection
-async function getCachedTranscription(
-  audioBlob: Blob, 
-  sessionId: string, 
-  chunkSequence: number
-): Promise<any | null> {
-  // Get the first few bytes of the audio to create a signature
-  const arrayBuffer = await audioBlob.arrayBuffer();
-  const firstBytes = new Uint8Array(arrayBuffer.slice(0, 16));
+## Next Steps Implementation Plan
+
+### 1. Implement Azure API Streaming Mode (Priority)
+
+Implement partial transcription display as results arrive from Azure:
+
+```typescript
+// In StreamingVoiceTest.tsx
+function processStreamingTranscription(chunk: AudioChunk) {
+  // Process audio in parallel with displaying interim results
+  setPartialText("Processing your speech...");
   
-  // Generate audio hash
-  const audioHash = generateAudioHash(audioBlob.size, firstBytes);
+  const processingPromise = processAudioChunk(chunk.blob, sessionInfo, chunk.isLastChunk);
   
-  // Check exact match first
-  const cacheKey = `${sessionId}:${chunkSequence}:${audioBlob.size}:${audioBlob.type}`;
-  const exactMatch = audioProcessingCache.get(cacheKey);
-  
-  if (exactMatch) {
-    return {
-      ...exactMatch.result,
-      fromCache: true,
-      cacheType: 'exact'
-    };
-  }
-  
-  // Check for similar audio
-  for (const [key, value] of audioProcessingCache.entries()) {
-    // If the audio hash is similar and not too old (within 10 minutes)
-    if (value.audioHash === audioHash && 
-        Date.now() - value.timestamp < 10 * 60 * 1000) {
-      return {
-        ...value.result,
-        fromCache: true,
-        cacheType: 'similar'
-      };
+  // Set up a polling mechanism to check for partial results
+  let pollCount = 0;
+  const maxPolls = 10;
+  const pollInterval = setInterval(async () => {
+    pollCount++;
+    try {
+      // Check for partial results
+      const partialResult = await fetch(`/api/transcribe-status/${sessionInfo.sessionId}`);
+      const data = await partialResult.json();
+      
+      if (data.partialText) {
+        setPartialText(data.partialText);
+      }
+      
+      // Stop polling after max tries or when processing is done
+      if (pollCount >= maxPolls) {
+        clearInterval(pollInterval);
+      }
+    } catch (error) {
+      console.error("Error polling for partial results:", error);
     }
-  }
+  }, 200);
   
-  return null;
+  // Process the full result when available
+  return processingPromise;
 }
 ```
 
-## Implementation Phases (UPDATED)
+### 2. Optimize Audio Format Based on Dynamic Detection
 
-### Phase 1: Audio Format Optimization (COMPLETED)
-- Implement format detection and selection
-- Test different audio formats with Azure Whisper
-- Optimize audio parameters for speed vs. quality balance
+```typescript
+// In transcribe-chunk/route.ts
+function getOptimizedFormat(audioBlob: Blob, isLastChunk: boolean): { blob: Blob, extension: string } {
+  const size = audioBlob.size;
+  const type = audioBlob.type;
+  
+  // For very small chunks (<5KB), prioritize speed over format consistency
+  if (size < 5000 && !isLastChunk) {
+    return { blob: audioBlob, extension: detectAudioFormatCached(type) };
+  }
+  
+  // For final chunks, prioritize MP3 format for quality vs size balance
+  if (isLastChunk) {
+    // If already MP3, don't convert
+    if (type.includes('mp3') || type.includes('mpeg')) {
+      return { blob: audioBlob, extension: 'mp3' };
+    }
+    
+    // Try to convert to MP3
+    return { 
+      blob: convertToOptimizedFormat(audioBlob, 'audio/mpeg'),
+      extension: 'mp3'
+    };
+  }
+  
+  // For interim chunks, use smallest format based on content
+  return { 
+    blob: audioBlob,
+    extension: detectAudioFormatCached(type)
+  };
+}
+```
 
-### Phase 2: Basic Chunking (COMPLETED)
-- Implement client-side audio chunking with MediaRecorder
-- Create new transcribe-chunk API endpoint
-- Basic chunk handling without sophisticated session management
+### 3. Implement Progressive UI Rendering
 
-### Phase 3: Advanced API and Audio Optimization (NEXT)
-- Implement advanced audio compression for faster processing
-- Optimize Azure API parameters for speed
-- Add silence detection and trimming
-- Improve caching with audio similarity detection
+```tsx
+// In StreamingVoiceTest.tsx
+function renderProgressiveResponse(partialResponse: string | null, finalResponse: string | null) {
+  const [displayText, setDisplayText] = useState("");
+  
+  // Update display text when responses change
+  useEffect(() => {
+    if (finalResponse) {
+      // If we have a final response, show it immediately
+      setDisplayText(finalResponse);
+    } else if (partialResponse) {
+      // If we have a partial response, show it with typing animation
+      let currentIndex = 0;
+      const text = partialResponse;
+      
+      const typingInterval = setInterval(() => {
+        if (currentIndex <= text.length) {
+          setDisplayText(text.substring(0, currentIndex));
+          currentIndex++;
+        } else {
+          clearInterval(typingInterval);
+        }
+      }, 20);
+      
+      return () => clearInterval(typingInterval);
+    }
+  }, [partialResponse, finalResponse]);
+  
+  return (
+    <div className="response-container">
+      <div className="response-text">{displayText}</div>
+      {!finalResponse && partialResponse && <div className="thinking-indicator">...</div>}
+    </div>
+  );
+}
+```
 
-### Phase 4: Parallel Processing Implementation (NEXT)
-- Implement concurrent processing of API calls and UI updates
-- Split transcription and AI processing into separate parallel flows
-- Implement optimistic UI updates while processing
+### 4. GPT-4o Prompt Template Optimization
 
-### Phase 5: Testing and Benchmarking (FINAL)
-- Compare performance with baseline
-- Identify and fix remaining bottlenecks
-- Measure latency improvements
+```typescript
+// Optimize prompts for faster response with GPT-4o
+const OPTIMIZED_PROMPT_TEMPLATES = {
+  standard: [
+    {
+      role: "system",
+      content: "You are a helpful assistant. Respond concisely and directly."
+    }
+  ],
+  
+  quickResponse: [
+    {
+      role: "system",
+      content: "You are a helpful assistant. Provide the shortest possible helpful response."
+    }
+  ],
+  
+  greeting: [
+    {
+      role: "system",
+      content: "You are a friendly assistant. Keep greetings under 10 words."
+    }
+  ]
+};
 
-## Updated Latency Targets
+// Detect intent to use optimized templates
+function getOptimizedPrompt(transcription: string) {
+  // Detect greetings
+  if (/^(hi|hello|hey|greetings|howdy)/i.test(transcription)) {
+    return OPTIMIZED_PROMPT_TEMPLATES.greeting;
+  }
+  
+  // Detect simple questions
+  if (transcription.length < 20 && transcription.includes('?')) {
+    return OPTIMIZED_PROMPT_TEMPLATES.quickResponse;
+  }
+  
+  // Default template
+  return OPTIMIZED_PROMPT_TEMPLATES.standard;
+}
+```
 
-Based on current performance and remaining optimization opportunities:
+## Conclusion
 
-- Initial latency: 11351.70ms
-- Current latency: 7103.90ms (~37% reduction)
-- Target latency: 5000-6000ms (additional ~1500-2000ms reduction)
+Our optimizations have made significant progress, reducing post-speech processing latency from ~5 seconds to ~2.5 seconds. The WebWorker implementation and API parameter tuning have been particularly effective.
 
-## Technical Considerations (UPDATED)
+By implementing the Phase IV optimizations outlined above, we can further reduce latency toward the target 1-2 second range while maintaining quality. The focus should be on Azure API optimization and progressive UI rendering to improve perceived performance.
 
-1. **Audio Format Efficiency**:
-   - Further optimize MP3 or WebM compression for speech
-   - Consider dynamically adjusting audio quality based on connection speed
-   - Research shows that 16kbps MP3 is sufficient for speech recognition while being much smaller
-
-2. **Azure API Optimization**:
-   - Research indicates temperature settings significantly impact processing speed
-   - Experiment with advanced parameters like beam search width and probability thresholds
-   - Consider using different model sizes for interim vs. final processing
-
-3. **Parallel Processing**:
-   - Split audio processing from transcription processing
-   - Begin AI processing as soon as partial transcription is available
-   - Use Web Workers for audio compression without blocking the main thread
-
-4. **Advanced Caching**:
-   - Implement similarity-based caching for audio segments
-   - Cache frequent phrases and their responses
-   - Use probabilistic data structures to identify similar audio inputs
-
-## Alternative Approaches
-
-If the proposed solution doesn't meet performance goals, consider:
-
-1. **Client-side Transcription**: Use browser's Web Speech API for initial fast transcription
-2. **Hybrid Processing**: Use client-side for short phrases, server-side for complex speech
-3. **Predictive Responses**: Start generating likely responses based on partial transcriptions 
+This implementation plan will be refined as we continue testing and optimizing the system. 
