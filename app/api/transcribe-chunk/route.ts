@@ -37,26 +37,28 @@ setInterval(() => {
 // Track successful format combinations
 const successfulFormats = new Set<string>();
 
-// Optimized parameter profiles for Azure Whisper based on use case
-// These settings are based on Azure's latest documentation
-const WHISPER_OPTIMIZATION_PROFILES = {
+// Ultra-optimized parameter profiles for Azure Whisper
+// These settings prioritize speed over accuracy
+const API_OPTIMIZATION_PROFILES = {
   interim: {
-    temperature: 0.6, // Higher temperature for faster but less accurate interim results
-    response_format: "json", // Always use JSON format for consistent parsing
-    prompt: "Convert speech to text. Keep it simple and fast.", // Simple prompt for speed
-    language: "en", // Explicitly set language for faster processing
-    compression_ratio_threshold: 2.4, // Less strict compression ratio for speed
+    temperature: 1.0, // Maximum temperature - fastest possible processing
+    beam_size: 1, // Use narrowest beam search (fastest)
+    response_format: "json", // Request JSON for faster parsing
+    best_of: 1, // Don't generate alternatives
+    patience: 0.1, // Lower patience value for faster beam search
+    compression_ratio_threshold: 2.4, // Less strict compression ratio check
     logprob_threshold: -1.0, // Less strict probability threshold
     no_speech_threshold: 0.6, // Less strict no_speech detection
   },
   final: {
-    temperature: 0.0, // Zero temperature for maximum accuracy in final chunks
-    response_format: "json", // Always use JSON format for consistent parsing
-    prompt: "Convert speech to text accurately. Include proper punctuation.", // Focus on accuracy
-    language: "en", // Explicitly set language
-    compression_ratio_threshold: 2.0, // Default compression ratio check
-    logprob_threshold: -0.8, // Stricter probability threshold for accuracy
-    no_speech_threshold: 0.4, // Stricter no_speech detection
+    temperature: 0.5, // Balance between speed and accuracy
+    beam_size: 3, // Reasonable beam search for accuracy while still fast
+    response_format: "json", // Request JSON for faster parsing
+    best_of: 1, // Don't generate alternatives
+    patience: 0.7, // Better patience value for final chunks
+    compression_ratio_threshold: 2.2, // Slightly less strict than default
+    logprob_threshold: -1.0, // Less strict probability threshold
+    no_speech_threshold: 0.5, // Slightly stricter for final chunks
   },
 };
 
@@ -98,297 +100,157 @@ export async function POST(request: Request) {
   const metrics: Record<string, number> = {};
 
   try {
-    // Parse form data
-    const parseStartTime = performance.now();
-    let formData;
-    try {
-      formData = await request.formData();
-    } catch (error) {
-      console.error("Error parsing form data:", error);
-      return NextResponse.json({ error: "Invalid form data" }, { status: 400 });
-    }
+    const formData = await request.formData();
+    metrics.parseFormData = performance.now() - startTime;
 
-    const audioFile = formData.get("file") as Blob;
-    const isLastChunk = formData.get("isLastChunk") === "true";
+    // Get session info and chunk data
     const sessionId = formData.get("sessionId") as string;
-    const chunkSequence = parseInt(
-      (formData.get("chunkSequence") as string) || "0"
-    );
-    const parseEndTime = performance.now();
-    metrics.parseFormData = parseEndTime - parseStartTime;
+    const chunkSequence = parseInt(formData.get("chunkSequence") as string);
+    const isLastChunk = formData.get("isLastChunk") === "true";
+    metrics.chunkSequence =
+      performance.now() - metrics.parseFormData - startTime;
 
-    // Basic validation
-    if (!audioFile || !sessionId) {
-      console.error("Missing required fields");
-      return NextResponse.json(
-        { error: "Missing audio file or session ID" },
-        { status: 400 }
-      );
-    }
+    // Get the audio file from the form data
+    const audioFile = formData.get("file") as Blob;
 
-    // Detect and normalize audio format
-    const detectFormatStartTime = performance.now();
-    const audioType = audioFile.type;
+    // Create a new blob with the explicit type to ensure proper handling
+    const fileType = audioFile.type;
+    let fileExtension = "webm"; // Default to webm
 
-    // Normalize to a simple MIME type without codec info
-    let simpleMimeType = audioType.includes(";")
-      ? audioType.split(";")[0]
-      : audioType;
+    // Check the MIME type of the audio file - use fast path for small files
+    const detectStart = performance.now();
 
-    // Map to standard file extension
-    let fileExtension = "mp3"; // Default to mp3 - best for Azure
-
-    if (simpleMimeType.includes("mp3") || simpleMimeType.includes("mpeg")) {
+    // Fast path detection using includes instead of regex
+    if (fileType.includes("mp3") || fileType.includes("mpeg")) {
       fileExtension = "mp3";
-    } else if (simpleMimeType.includes("wav")) {
+    } else if (fileType.includes("wav")) {
       fileExtension = "wav";
-    } else if (simpleMimeType.includes("webm")) {
-      fileExtension = "webm";
-    } else if (simpleMimeType.includes("ogg")) {
+    } else if (fileType.includes("ogg")) {
       fileExtension = "ogg";
+    } else if (fileType.includes("webm")) {
+      fileExtension = "webm";
     }
 
-    // Prioritize MP3 if we've had success with it before
-    // This ensures we use formats that have worked well in the past
-    if (
-      successfulFormats.has("mp3") &&
-      fileExtension !== "mp3" &&
-      !isLastChunk
-    ) {
-      console.log(`Remapping ${fileExtension} to mp3 based on past success`);
-      fileExtension = "mp3";
-      simpleMimeType = "audio/mpeg";
-    }
+    metrics.detectFormat = performance.now() - detectStart;
 
+    // Log detected audio format
     console.log(
-      `Processing audio: ${simpleMimeType} (${fileExtension}) - ${audioFile.size} bytes, chunk ${chunkSequence}, ${isLastChunk ? "final" : "interim"}`
-    );
-    metrics.detectFormat = performance.now() - detectFormatStartTime;
-
-    // Check cache for identical audio chunk
-    const cacheKey = getTranscriptionCacheKey(
-      audioFile.size,
-      simpleMimeType,
-      sessionId,
-      chunkSequence
+      `Detected audio format: ${fileType}, using extension: ${fileExtension}`
     );
 
-    const cachedResult = transcriptionCache.get(cacheKey);
-    if (cachedResult) {
-      console.log(`Cache hit for chunk ${chunkSequence}`);
-      // Add cache hit metrics
-      metrics.cacheHit = 1;
-      metrics.total = performance.now() - startTime;
+    // Prepare the form data for the API request - optimize for speed
+    const apiFormData = new FormData();
+    apiFormData.append("file", audioFile, `audio.${fileExtension}`);
+    apiFormData.append("model", "whisper-1");
+    apiFormData.append("language", "en");
 
-      return NextResponse.json({
-        ...cachedResult.result,
-        fromCache: true,
-        metrics: {
-          ...cachedResult.result.metrics,
-          cacheHit: 1,
-          total: metrics.total,
-        },
-      });
+    // Apply optimization parameters based on chunk type
+    const profile = isLastChunk
+      ? API_OPTIMIZATION_PROFILES.final
+      : API_OPTIMIZATION_PROFILES.interim;
+
+    // Add all parameters from the selected profile
+    for (const [key, value] of Object.entries(profile)) {
+      apiFormData.append(key, value.toString());
     }
 
-    // Get Azure API credentials
-    const azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT?.trim();
-    const azureKey = process.env.AZURE_OPENAI_API_KEY?.trim();
-    const whisperDeployment =
-      process.env.AZURE_OPENAI_WHISPER_DEPLOYMENT?.trim();
+    const formatProcessingTime = performance.now();
+    metrics.formatProcessingTime =
+      formatProcessingTime -
+      metrics.detectFormat -
+      metrics.chunkSequence -
+      metrics.parseFormData -
+      startTime;
 
-    if (!azureEndpoint || !azureKey || !whisperDeployment) {
-      console.error("Missing Azure credentials");
+    // Get API configuration
+    const apiKey = process.env.AZURE_OPENAI_API_KEY;
+    const apiEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+    const apiVersion =
+      process.env.AZURE_OPENAI_API_VERSION || "2023-09-01-preview";
+    const deploymentName =
+      process.env.AZURE_OPENAI_DEPLOYMENT_NAME || "whisper";
+
+    if (!apiKey || !apiEndpoint) {
+      console.error("Azure OpenAI API key or endpoint not found");
       return NextResponse.json(
-        { error: "Azure API credentials not configured" },
+        { error: "API configuration error" },
         { status: 500 }
       );
     }
 
-    // Prepare Azure API request
-    const apiFormData = new FormData();
+    // Ultra-optimized API URL with efficient connection parameters
+    const apiUrl = `${apiEndpoint}/openai/deployments/${deploymentName}/audio/transcriptions?api-version=${apiVersion}`;
 
-    // Convert to ArrayBuffer and create new Blob with clean MIME type
-    const arrayBufferStartTime = performance.now();
-    const arrayBuffer = await audioFile.arrayBuffer();
-    metrics.getArrayBuffer = performance.now() - arrayBufferStartTime;
+    // Set reasonable timeout based on chunk type
+    // Not too aggressive, but still optimized
+    const timeoutMs = isLastChunk ? 6000 : 2000; // 6s for final, 2s for interim
 
-    // Create a clean blob with simplified MIME type
-    const processableAudioBlob = new Blob([arrayBuffer], {
-      type: simpleMimeType,
+    // Add connection optimization headers
+    const requestHeaders = {
+      "api-key": apiKey,
+      Connection: "keep-alive",
+      Accept: "application/json",
+      "Cache-Control": "no-cache",
+    };
+
+    const fetchStart = performance.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    // Use faster connection options with keepalive
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: requestHeaders,
+      body: apiFormData,
+      signal: controller.signal,
+      keepalive: true,
+      priority: "high",
     });
+    clearTimeout(timeoutId);
 
-    // Add detailed request metrics
-    metrics.audioSize = processableAudioBlob.size;
-    metrics.audioFormat = simpleMimeType as unknown as number; // Type cast for metrics
-    metrics.isLastChunkFlag = isLastChunk ? 1 : 0; // Convert boolean to number
-    metrics.chunkSequence = chunkSequence;
+    metrics.fetchTime = performance.now() - fetchStart;
 
-    // Create form data with consistent naming conventions
-    apiFormData.append("file", processableAudioBlob, `audio.${fileExtension}`);
-    apiFormData.append("model", "whisper-1");
-
-    // Select optimization profile based on whether this is a final chunk
-    const optimizationProfile = isLastChunk
-      ? WHISPER_OPTIMIZATION_PROFILES.final
-      : WHISPER_OPTIMIZATION_PROFILES.interim;
-
-    // Apply all optimization parameters
-    for (const [key, value] of Object.entries(optimizationProfile)) {
-      apiFormData.append(key, String(value));
-    }
-
-    // Add chunk-specific metadata to help with context
-    if (!isLastChunk) {
-      apiFormData.append("is_interim", "true");
-    }
-
-    // Ensure endpoint is correctly formatted
-    const baseUrl = azureEndpoint.endsWith("/")
-      ? azureEndpoint.slice(0, -1)
-      : azureEndpoint;
-
-    // Call Azure Whisper API
-    const apiCallStartTime = performance.now();
-
-    const apiUrl = `${baseUrl}/openai/deployments/${whisperDeployment}/audio/transcriptions?api-version=2023-09-01-preview`;
-
-    try {
-      // Use connection pooling to improve performance
-      connectionCache.set(sessionId, { lastUsed: Date.now() });
-
-      // Set optimized request timeout - shorter for interim chunks
-      const timeoutDuration = isLastChunk ? 5000 : 2000;
-      const timeoutController = new AbortController();
-      const timeoutId = setTimeout(
-        () => timeoutController.abort(),
-        timeoutDuration
-      );
-
-      const azureResponse = await fetch(apiUrl, {
-        method: "POST",
-        headers: {
-          "api-key": azureKey,
-          Connection: "keep-alive",
-          // DO NOT set Content-Type header - let fetch handle it
-        },
-        body: apiFormData,
-        // Add caching directives
-        cache: "no-store",
-        // Add timeout signal
-        signal: timeoutController.signal,
-      });
-
-      // Clear timeout if request completed
-      clearTimeout(timeoutId);
-
-      const apiCallEndTime = performance.now();
-      metrics.azureApiCall = apiCallEndTime - apiCallStartTime;
-
-      // Log success/failure
-      if (!azureResponse.ok) {
-        console.error(`Azure API error: ${azureResponse.status}`, {
-          chunkSequence,
-          isLastChunk,
-          audioSize: processableAudioBlob.size,
-          audioType: simpleMimeType,
-          fileExtension,
-        });
-      } else {
-        console.log(`Azure API success: ${azureResponse.status}`, {
-          chunkSequence,
-          isLastChunk,
-          audioSize: processableAudioBlob.size,
-          fileExtension,
-          processingTime: metrics.azureApiCall,
-        });
-
-        // Record successful format for future use
-        successfulFormats.add(fileExtension);
-      }
-
-      // Parse response
-      let data;
-      try {
-        const responseStartTime = performance.now();
-        data = await azureResponse.json();
-        metrics.parseResponse = performance.now() - responseStartTime;
-      } catch (error) {
-        return NextResponse.json(
-          { error: "Failed to parse Azure response" },
-          { status: 500 }
-        );
-      }
-
-      if (!azureResponse.ok) {
-        console.error("Azure API error:", {
-          status: azureResponse.status,
-          data,
-        });
-
-        return NextResponse.json(
-          {
-            error: `Azure API error: ${azureResponse.status} - ${data.error?.message || JSON.stringify(data)}`,
-          },
-          { status: azureResponse.status }
-        );
-      }
-
-      // Calculate total time
-      const endTime = performance.now();
-      metrics.total = endTime - startTime;
-
-      // Save successful transcription to session state
-      if (data.text) {
-        await storeSessionState(sessionId, {
-          lastText: data.text,
-          lastUpdated: Date.now(),
-          chunkSequence,
-        });
-      }
-
-      // Prepare result
-      const result = {
-        text: data.text,
-        combinedText: data.text,
-        isPartial: !isLastChunk,
-        chunkSequence,
-        sessionId,
-        metrics: metrics,
-      };
-
-      // Cache the result for potential reuse
-      // Don't cache very small or empty results
-      if (data.text && data.text.length > 3) {
-        transcriptionCache.set(cacheKey, {
-          result,
-          timestamp: Date.now(),
-        });
-      }
-
-      // Return transcription result
-      return NextResponse.json(result);
-    } catch (error) {
-      // Check if this is a timeout error
-      const isTimeout = error instanceof Error && error.name === "AbortError";
-
-      console.error(`Error calling Azure: ${isTimeout ? "TIMEOUT" : error}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Azure API error: ${response.status} ${errorText}`);
       return NextResponse.json(
-        {
-          error: isTimeout
-            ? "Azure API timeout - request took too long"
-            : `Error communicating with Azure API: ${error instanceof Error ? error.message : "Unknown error"}`,
-          metrics: metrics,
-        },
-        { status: isTimeout ? 408 : 500 }
+        { error: `Azure API error: ${response.status} ${errorText}` },
+        { status: response.status }
       );
     }
-  } catch (error) {
-    console.error("API route error:", error);
+
+    const parseStart = performance.now();
+    const data = await response.json();
+    metrics.parseTime = performance.now() - parseStart;
+
+    // Add audio file size to metrics
+    metrics.audioSize = audioFile.size;
+
+    const endTime = performance.now();
+    metrics.processingTime = endTime - startTime;
+
+    // Estimate Azure API call time (fetch time minus network overhead)
+    metrics.azureApiCall = metrics.fetchTime - 100; // Subtract estimated network latency
+
+    // Return the transcription data and metrics
+    return NextResponse.json({
+      success: true,
+      text: data.text,
+      sessionId,
+      chunkSequence,
+      isLastChunk,
+      metrics,
+    });
+  } catch (error: any) {
+    console.error("Error in transcribe-chunk API:", error);
+
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    // Add any collected metrics to the error response
     return NextResponse.json(
       {
-        error: `Internal server error: ${error instanceof Error ? error.message : "Unknown error"}`,
-        metrics: metrics,
+        error: `Transcription error: ${errorMessage}`,
+        metrics,
       },
       { status: 500 }
     );

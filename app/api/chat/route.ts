@@ -10,183 +10,167 @@ const responseCache = new LRUCache<string, any>({
   allowStale: false,
 });
 
+// Add optimized model parameters
+const OPTIMIZED_MODEL_PARAMS = {
+  temperature: 0.9, // Higher temperature for faster responses
+  top_p: 0.5, // Lower top_p to reduce token consideration
+  max_tokens: 150, // Reasonable limit for responses
+  presence_penalty: 0, // No penalty for repeated tokens
+  frequency_penalty: 0, // No penalty for frequency
+};
+
 export async function POST(request: Request) {
   const startTime = performance.now();
   const metrics: Record<string, number> = {};
 
   try {
-    // Step 1: Parse request
-    const parseStartTime = performance.now();
-    const { message } = await request.json();
-    const parseEndTime = performance.now();
-    metrics.parseRequest = parseEndTime - parseStartTime;
+    // Parse request data
+    const parseRequestStartTime = performance.now();
+    const requestData = await request.json();
+    metrics.parseRequest = performance.now() - parseRequestStartTime;
 
-    if (!message) {
+    // Get environment variables
+    const getEnvStartTime = performance.now();
+    const apiKey = process.env.AZURE_OPENAI_API_KEY;
+    const apiEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+    const apiVersion =
+      process.env.AZURE_OPENAI_API_VERSION || "2023-07-01-preview";
+
+    // Check multiple possible deployment name environment variables
+    const deploymentName = process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o"; // Explicit fallback to gpt-4o
+
+    console.log(`Using OpenAI deployment: ${deploymentName}`);
+    metrics.getEnvironment = performance.now() - getEnvStartTime;
+
+    if (!apiKey || !apiEndpoint) {
+      console.error("API key or endpoint not found");
       return NextResponse.json(
-        { error: "No message provided" },
-        { status: 400 }
-      );
-    }
-
-    // Check cache for exact message match
-    const cacheKey = message.trim().toLowerCase();
-    const cachedResponse = responseCache.get(cacheKey);
-    if (cachedResponse) {
-      console.log("Chat response served from cache");
-      return NextResponse.json({
-        message: cachedResponse.message,
-        metrics: {
-          ...cachedResponse.metrics,
-          cacheHit: true,
-          total: performance.now() - startTime,
-        },
-      });
-    }
-
-    // Step 2: Get environment variables
-    const envStartTime = performance.now();
-    const azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT?.trim();
-    const azureKey = process.env.AZURE_OPENAI_API_KEY?.trim();
-    const deploymentName = process.env.AZURE_OPENAI_DEPLOYMENT?.trim(); // This should be 'gpt-4o' from your .env
-    const envEndTime = performance.now();
-    metrics.getEnvironment = envEndTime - envStartTime;
-
-    if (!azureEndpoint || !azureKey || !deploymentName) {
-      console.error("Missing Azure OpenAI configuration:", {
-        hasEndpoint: !!azureEndpoint,
-        hasKey: !!azureKey,
-        hasDeployment: !!deploymentName,
-      });
-      return NextResponse.json(
-        { error: "Azure OpenAI not properly configured" },
+        { error: "API configuration error" },
         { status: 500 }
       );
     }
 
-    // Step 3: Prepare request
-    const prepareStartTime = performance.now();
-    // Ensure endpoint format is correct
-    const baseUrl = azureEndpoint.endsWith("/")
-      ? azureEndpoint.slice(0, -1)
-      : azureEndpoint;
-    const prepareEndTime = performance.now();
-    metrics.prepareRequest = prepareEndTime - prepareStartTime;
+    // Prepare request
+    const prepareRequestStartTime = performance.now();
+    const apiUrl = `${apiEndpoint}/openai/deployments/${deploymentName}/chat/completions?api-version=${apiVersion}`;
 
-    // Step 4: Call Azure OpenAI API
-    console.log(
-      "Calling Azure OpenAI API with message length:",
-      message.length
-    );
-    const apiCallStartTime = performance.now();
+    // Ensure messages array is properly formatted
+    let messages = requestData.messages;
 
-    // Use AbortController to prevent hanging requests
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    // If messages array is not provided or empty, create a default one with the message
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      const message = requestData.message || "";
 
-    try {
-      const response = await fetch(
-        `${baseUrl}/openai/deployments/${deploymentName}/chat/completions?api-version=2024-02-15-preview`,
+      messages = [
         {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "api-key": azureKey,
-            Connection: "keep-alive",
-          },
-          body: JSON.stringify({
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You are a helpful assistant. Provide clear, concise responses.",
-              },
-              {
-                role: "user",
-                content: message,
-              },
-            ],
-            max_tokens: 800,
-            temperature: 0.7,
-            frequency_penalty: 0,
-            presence_penalty: 0,
-            top_p: 0.95,
-            stop: null,
-          }),
-          signal: controller.signal,
-          cache: "no-store",
-        }
-      );
-
-      if (!response.ok) {
-        const error = await response.text();
-        console.error("Azure OpenAI API error:", error);
-        throw new Error(`Azure OpenAI API error: ${response.statusText}`);
-      }
-
-      // Step 5: Parse response
-      const parseResponseStartTime = performance.now();
-      const data = await response.json();
-      const aiResponse =
-        data.choices[0]?.message?.content || "No response generated";
-      const parseResponseEndTime = performance.now();
-      metrics.parseResponse = parseResponseEndTime - parseResponseStartTime;
-
-      // Calculate total time
-      const endTime = performance.now();
-      const totalTime = endTime - startTime;
-      metrics.total = totalTime;
-
-      // Log timing metrics
-      console.log("Chat API timing metrics:", {
-        parseRequest: metrics.parseRequest
-          ? `${metrics.parseRequest.toFixed(2)}ms (${((metrics.parseRequest / totalTime) * 100).toFixed(2)}%)`
-          : "N/A",
-        getEnvironment: metrics.getEnvironment
-          ? `${metrics.getEnvironment.toFixed(2)}ms (${((metrics.getEnvironment / totalTime) * 100).toFixed(2)}%)`
-          : "N/A",
-        prepareRequest: metrics.prepareRequest
-          ? `${metrics.prepareRequest.toFixed(2)}ms (${((metrics.prepareRequest / totalTime) * 100).toFixed(2)}%)`
-          : "N/A",
-        apiCall: metrics.apiCall
-          ? `${metrics.apiCall.toFixed(2)}ms (${((metrics.apiCall / totalTime) * 100).toFixed(2)}%)`
-          : "N/A",
-        parseResponse: metrics.parseResponse
-          ? `${metrics.parseResponse.toFixed(2)}ms (${((metrics.parseResponse / totalTime) * 100).toFixed(2)}%)`
-          : "N/A",
-        total: totalTime ? `${totalTime.toFixed(2)}ms` : "N/A",
-        messageLength: message ? message.length : 0,
-        responseLength: aiResponse ? aiResponse.length : 0,
-      });
-
-      // Cache the response
-      const responseObj = {
-        message: aiResponse,
-        metrics: metrics,
-      };
-      responseCache.set(cacheKey, responseObj);
-
-      return NextResponse.json(responseObj);
-    } finally {
-      clearTimeout(timeoutId);
-      const apiCallEndTime = performance.now();
-      metrics.apiCall = apiCallEndTime - apiCallStartTime;
-      console.log(`Azure OpenAI API call took ${metrics.apiCall.toFixed(2)}ms`);
+          role: "system",
+          content:
+            "You are a helpful assistant. Provide clear, concise responses.",
+        },
+        {
+          role: "user",
+          content: message,
+        },
+      ];
     }
-  } catch (error) {
-    console.error("Error in chat API:", error);
 
-    // Calculate total time even in case of error
+    // Apply optimized parameters to user request
+    const optimizedRequestData = {
+      messages: messages,
+      temperature:
+        requestData.temperature ?? OPTIMIZED_MODEL_PARAMS.temperature,
+      top_p: requestData.top_p ?? OPTIMIZED_MODEL_PARAMS.top_p,
+      max_tokens: requestData.max_tokens ?? OPTIMIZED_MODEL_PARAMS.max_tokens,
+      presence_penalty: OPTIMIZED_MODEL_PARAMS.presence_penalty,
+      frequency_penalty: OPTIMIZED_MODEL_PARAMS.frequency_penalty,
+    };
+
+    console.log("Sending optimized request to Azure OpenAI:", {
+      endpoint: apiUrl,
+      messageCount: optimizedRequestData.messages.length,
+      userMessage: messages[messages.length - 1]?.content?.slice(0, 50) + "...",
+    });
+
+    metrics.prepareRequest = performance.now() - prepareRequestStartTime;
+
+    // Set a reasonable timeout - longer to ensure we get a response
+    const timeoutMs = 8000; // 8 seconds max
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    // Call OpenAI API with optimized connection settings
+    const openAIStartTime = performance.now();
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": apiKey,
+        Connection: "keep-alive",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(optimizedRequestData),
+      signal: controller.signal,
+      keepalive: true,
+    });
+    clearTimeout(timeoutId);
+
+    metrics.openAIApiCall = performance.now() - openAIStartTime;
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Chat API error: ${response.status}`, errorText);
+      throw new Error(`Chat API error: ${response.status} - ${errorText}`);
+    }
+
+    // Parse response
+    const parseResponseStartTime = performance.now();
+    const data = await response.json();
+    metrics.parseResponse = performance.now() - parseResponseStartTime;
+
+    // Extract the actual response message with better fallbacks
+    let responseMessage = null;
+
+    // Try different paths to find the response content
+    if (data.choices && data.choices.length > 0) {
+      if (data.choices[0].message?.content) {
+        responseMessage = data.choices[0].message.content;
+      } else if (data.choices[0].text) {
+        responseMessage = data.choices[0].text;
+      } else if (typeof data.choices[0] === "string") {
+        responseMessage = data.choices[0];
+      }
+    }
+
+    // Default fallback message if nothing found
+    responseMessage =
+      responseMessage || "I couldn't generate a response. Please try again.";
+
+    console.log(
+      "Chat API response extracted:",
+      responseMessage.slice(0, 50) + "..."
+    );
+
+    // Calculate total time
     const endTime = performance.now();
     metrics.total = endTime - startTime;
-    console.log(`Chat API failed after ${metrics.total.toFixed(2)}ms`);
 
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Unknown error",
-        metrics: metrics,
-      },
-      { status: 500 }
-    );
+    // Return data with the message extracted for easy access
+    return NextResponse.json({
+      message: responseMessage,
+      choices: data.choices,
+      metrics,
+    });
+  } catch (error) {
+    console.error("Error in chat route:", error);
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+
+    // Return a fallback response rather than an error
+    return NextResponse.json({
+      message: "I'm having trouble responding right now. Please try again.",
+      error: `Error calling OpenAI API: ${errorMessage}`,
+      metrics,
+    });
   }
 }
 

@@ -78,6 +78,9 @@ export default function StreamingVoiceTest({
   const [audioLevel, setAudioLevel] = useState(0);
   const vadRef = useRef<any>(null);
 
+  // Add WebWorker management
+  const audioWorkerRef = useRef<Worker | null>(null);
+
   useEffect(() => {
     return () => {
       if (mediaRecorderRef.current && isRecording) {
@@ -96,50 +99,72 @@ export default function StreamingVoiceTest({
     []
   );
 
-  // Process transcribed text with AI
-  const processTranscribedText = useCallback(
-    async (text: string) => {
-      const startTime = performance.now();
-      try {
-        setIsProcessing(true);
+  // Process the final transcription through the chat API
+  const processChatResponse = useCallback(
+    async (transcription: string) => {
+      if (!transcription) {
+        console.error("Empty transcription, skipping chat processing");
+        return;
+      }
 
-        const chatStartTime = performance.now();
-        const response = await fetch("/api/chat", {
+      const chatStartTime = performance.now();
+      setIsProcessing(true);
+
+      try {
+        // Call the chat API
+        console.log("Calling chat API with transcription:", transcription);
+        const chatResponse = await fetch("/api/chat", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Connection: "keep-alive",
           },
-          body: JSON.stringify({ message: text }),
-          cache: "no-store",
+          body: JSON.stringify({
+            messages: [
+              {
+                role: "system",
+                content: "You are a helpful assistant. Respond concisely.",
+              },
+              {
+                role: "user",
+                content: transcription,
+              },
+            ],
+          }),
         });
-        const chatEndTime = performance.now();
-        logPerformance("OpenAI Chat API Call", chatStartTime, chatEndTime);
 
-        if (!response.ok) {
-          throw new Error(`Chat API error: ${response.statusText}`);
+        if (!chatResponse.ok) {
+          throw new Error(`Chat API error: ${chatResponse.status}`);
         }
 
-        const dataStartTime = performance.now();
-        const data = await response.json();
-        const dataEndTime = performance.now();
-        logPerformance("Parse Chat Response", dataStartTime, dataEndTime);
+        const data = await chatResponse.json();
+        console.log("Chat API metrics:", data.metrics);
+
+        const chatEndTime = performance.now();
+        logPerformance("OpenAI Chat API Call", chatStartTime, chatEndTime);
 
         // Store API metrics if available
         if (data.metrics) {
           setChatMetrics(data.metrics);
-          console.log("Chat API metrics:", data.metrics);
         }
 
-        setResponse(data.message || "No response received");
-      } catch (error) {
+        // Extract the message from the response
+        const responseMessage =
+          data.message ||
+          (data.choices && data.choices[0]?.message?.content) ||
+          "No response received";
+
+        setResponse(responseMessage);
+
+        const parseEndTime = performance.now();
+        logPerformance("Parse Chat Response", chatEndTime, parseEndTime);
+        logPerformance("Total Chat Processing", chatStartTime, parseEndTime);
+      } catch (error: any) {
         console.error("Error processing chat:", error);
         setError(
-          `Failed to get AI response: ${error instanceof Error ? error.message : String(error)}`
+          `Error processing chat: ${error instanceof Error ? error.message : String(error)}`
         );
+        setResponse("Error: Unable to get AI response");
       } finally {
-        const endTime = performance.now();
-        logPerformance("Total Chat Processing", startTime, endTime);
         setIsProcessing(false);
       }
     },
@@ -210,7 +235,7 @@ export default function StreamingVoiceTest({
 
           // Process with AI if this is final chunk or a complete thought
           if (!result.isPartial && shouldProcessWithAI(text)) {
-            await processTranscribedText(result.combinedText || text);
+            await processChatResponse(result.combinedText || text);
           }
         }
       }
@@ -218,7 +243,7 @@ export default function StreamingVoiceTest({
       // Update session info
       setSessionInfo((prevSession) => incrementChunkSequence(prevSession));
     },
-    [onTranscriptionComplete, processTranscribedText]
+    [onTranscriptionComplete, processChatResponse]
   );
 
   // Get the best supported MIME type for audio recording
@@ -491,10 +516,66 @@ export default function StreamingVoiceTest({
           // Prepare audio blob and chat API connection in parallel
           const blobStartTime = performance.now();
 
-          // Run multiple operations in parallel:
-          // 1. Pre-connect to APIs to warm up connections
-          // 2. Create the audio blob
-          const [_, __, audioBlob] = await Promise.all([
+          // Use the WebWorker if available, otherwise fallback to main thread processing
+          let audioBlob: Blob;
+
+          if (audioWorkerRef.current) {
+            // Convert blobs to ArrayBuffers for transfer to the worker
+            const arrayBufferPromises = audioChunksRef.current.map(
+              async (chunk) => {
+                return await chunk.arrayBuffer();
+              }
+            );
+            const arrayBuffers = await Promise.all(arrayBufferPromises);
+
+            // Process in worker
+            audioBlob = await new Promise<Blob>((resolve, reject) => {
+              if (!audioWorkerRef.current) {
+                reject(new Error("Worker not available"));
+                return;
+              }
+
+              // Set up message handler for worker response
+              const messageHandler = (event: MessageEvent) => {
+                if (event.data.type === "PROCESSED_AUDIO") {
+                  audioWorkerRef.current?.removeEventListener(
+                    "message",
+                    messageHandler
+                  );
+                  resolve(event.data.audioBlob);
+                } else if (event.data.type === "ERROR") {
+                  audioWorkerRef.current?.removeEventListener(
+                    "message",
+                    messageHandler
+                  );
+                  reject(new Error(event.data.error));
+                }
+              };
+
+              // Listen for worker response
+              audioWorkerRef.current.addEventListener(
+                "message",
+                messageHandler
+              );
+
+              // Send chunks to worker for processing
+              audioWorkerRef.current.postMessage({
+                type: "PROCESS_AUDIO",
+                chunks: arrayBuffers,
+                mimeType: mediaRecorderRef.current?.mimeType || "audio/webm",
+                isLastChunk: true,
+              });
+            });
+          } else {
+            // Fallback to main thread processing
+            audioBlob = await createOptimizedAudioBlob(
+              audioChunksRef.current,
+              mediaRecorderRef.current?.mimeType
+            );
+          }
+
+          // Run API prefetching in parallel with audio processing
+          await Promise.all([
             // Prefetch transcribe API
             fetch("/api/transcribe-chunk", {
               method: "HEAD",
@@ -506,12 +587,6 @@ export default function StreamingVoiceTest({
               method: "HEAD",
               headers: { Connection: "keep-alive" },
             }).catch(() => null),
-
-            // Create optimized audio blob
-            createOptimizedAudioBlob(
-              audioChunksRef.current,
-              mediaRecorderRef.current?.mimeType
-            ),
           ]);
 
           const blobEndTime = performance.now();
@@ -751,6 +826,69 @@ export default function StreamingVoiceTest({
   const toggleVADMode = () => {
     setUsingVAD(!usingVAD);
   };
+
+  // Add this function to pre-warm API connections
+  const warmUpAPIs = async () => {
+    console.log("Pre-emptively warming up API connections...");
+
+    // Pre-connect to both APIs to establish TCP connections
+    await Promise.all([
+      fetch("/api/transcribe-chunk", {
+        method: "HEAD",
+        headers: { Connection: "keep-alive" },
+      }).catch(() => console.log("Transcribe API warm-up completed")),
+
+      fetch("/api/chat", {
+        method: "HEAD",
+        headers: { Connection: "keep-alive" },
+      }).catch(() => console.log("Chat API warm-up completed")),
+    ]);
+
+    console.log("API connections pre-established");
+  };
+
+  // Add API warm-up to component initialization
+  useEffect(() => {
+    // Warm up API connections immediately on component mount
+    warmUpAPIs();
+
+    // Set up recurring warm-up every 2 minutes to keep connections alive
+    const keepAliveInterval = setInterval(warmUpAPIs, 120000);
+
+    // Clean up interval on component unmount
+    return () => {
+      clearInterval(keepAliveInterval);
+    };
+  }, []);
+
+  // Add WebWorker management
+  useEffect(() => {
+    // Create the audio processing worker
+    let audioWorker: Worker | null = null;
+
+    try {
+      // Create worker with a dynamic import
+      audioWorker = new Worker(new URL("./audioWorker.ts", import.meta.url), {
+        type: "module",
+      });
+
+      console.log("Audio processing worker initialized");
+
+      // Store the worker reference
+      audioWorkerRef.current = audioWorker;
+    } catch (error) {
+      console.error("Error initializing audio worker:", error);
+    }
+
+    // Clean up worker when component unmounts
+    return () => {
+      if (audioWorker) {
+        audioWorker.terminate();
+        audioWorkerRef.current = null;
+        console.log("Audio processing worker terminated");
+      }
+    };
+  }, []);
 
   return (
     <div className="flex flex-col gap-4 p-4">
