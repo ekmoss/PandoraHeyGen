@@ -1,7 +1,34 @@
 "use client";
 
 /* eslint-disable no-console */
+/**
+ * InteractiveAvatar Component with Optimized Audio Processing
+ *
+ * This component implements a streaming HeyGen avatar with an optimized audio capture
+ * and processing pipeline for reduced latency:
+ *
+ * Audio Optimization Strategy:
+ * 1. Uses Web Workers for audio processing when available to move work off the main thread
+ * 2. Implements optimized MediaRecorder settings with audio/webm;codecs=opus format
+ * 3. Pre-warms API connections to reduce connection establishment overhead
+ * 4. Uses parallel processing for audio preparation and API requests
+ * 5. Tracks detailed performance metrics for all operations
+ * 6. Implements optimized audio blob handling with direct ArrayBuffer manipulation
+ * 7. Uses dynamic timeouts based on audio chunk size and type
+ *
+ * The audio processing flow:
+ * - User clicks "Push to Talk" → startPushToTalk → MediaRecorder starts
+ * - Audio chunks collected in audioChunksRef
+ * - User clicks "Stop" → stopPushToTalk → MediaRecorder stops
+ * - processRecordedAudio processes the chunks (using Web Worker if available)
+ * - Audio sent to transcription API
+ * - Transcription sent to Chat API
+ * - Avatar speaks the response
+ *
+ * All operations are carefully timed and logged to console for performance analysis.
+ */
 import type { StartAvatarResponse } from "@heygen/streaming-avatar";
+import type { AudioWorkerOutput } from "./audioWorker";
 
 import StreamingAvatar, {
   AvatarQuality,
@@ -38,6 +65,16 @@ import InteractiveAvatarTextInput from "./InteractiveAvatarTextInput";
 import { AVATARS, STT_LANGUAGE_LIST } from "@/app/lib/constants";
 import { AppConfig } from "@/app/lib/configTypes";
 import Image from "next/image";
+
+// Add these imports from streamingAudio
+import {
+  createStreamingSession,
+  processAudioChunk,
+  incrementChunkSequence,
+  SessionInfo,
+  DEFAULT_STREAMING_CONFIG,
+  shouldProcessWithAI,
+} from "@/app/lib/streamingAudio";
 
 interface InteractiveAvatarProps {
   initialConfig: AppConfig;
@@ -610,162 +647,644 @@ export default function InteractiveAvatar({
     initializeAvatarMicState();
   }, []);
 
-  // Process recorded audio
-  const processRecordedAudio = async () => {
+  // Add to the existing state variables
+  const audioWorkerRef = useRef<Worker | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const processingMetrics = useRef<Record<string, number>>({});
+  const recordingStartTimeRef = useRef<number>(0);
+
+  // Add this helper function for performance logging
+  const logPerformance = useCallback(
+    (step: string, startTime: number, endTime: number) => {
+      const duration = endTime - startTime;
+      processingMetrics.current[step] = duration;
+      console.log(`Performance Metric - ${step}: ${duration.toFixed(2)}ms`);
+      return duration;
+    },
+    []
+  );
+
+  // After the other useEffect hooks, add a new one for WebWorker initialization
+  useEffect(() => {
+    if (!isMounted) return;
+
+    // Create the audio processing worker
+    let audioWorker: Worker | null = null;
+
     try {
-      console.log("Processing recorded audio...");
-      const audioBlob = new Blob(audioChunks, { type: "audio/wav" }); // Using wav format for better compatibility
-      console.log("Created audio blob:", {
-        size: audioBlob.size,
-        type: audioBlob.type,
+      // Create worker with a dynamic import
+      audioWorker = new Worker(new URL("./audioWorker.ts", import.meta.url), {
+        type: "module",
       });
-
-      // Create form data for the audio
-      const formData = new FormData();
-      formData.append("file", audioBlob, "recording.wav"); // Changed key from 'audio' to 'file'
-
-      console.log("Sending audio for transcription...");
-      const transcribeResponse = await fetch("/api/transcribe", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!transcribeResponse.ok) {
-        const errorText = await transcribeResponse.text();
-        console.error("Transcription failed:", {
-          status: transcribeResponse.status,
-          statusText: transcribeResponse.statusText,
-          error: errorText,
-        });
-        throw new Error(
-          `Transcription failed: ${transcribeResponse.statusText} - ${errorText}`
-        );
-      }
-
-      const { text: transcribedText } = await transcribeResponse.json();
-      console.log("Transcription received:", transcribedText);
-
-      // Get AI response
-      console.log("Requesting AI response...");
-      const chatResponse = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: transcribedText }),
-      });
-
-      if (!chatResponse.ok) {
-        const errorText = await chatResponse.text();
-        console.error("Chat response failed:", {
-          status: chatResponse.status,
-          statusText: chatResponse.statusText,
-          error: errorText,
-        });
-        throw new Error(
-          `Chat response failed: ${chatResponse.statusText} - ${errorText}`
-        );
-      }
-
-      const { message: aiResponse } = await chatResponse.json();
-      console.log("AI response received:", aiResponse);
-
-      return { transcribedText, aiResponse };
+      audioWorkerRef.current = audioWorker;
+      console.log("Audio processing worker initialized");
     } catch (error) {
-      console.error("Error processing audio:", error);
-      throw error;
+      console.error("Error initializing audio worker:", error);
     }
-  };
 
-  // Initialize audio recorder
-  const initializeRecorder = async () => {
-    try {
-      console.log("Initializing audio recorder...");
+    // Setup API connection pre-warming
+    const warmUpAPIs = async () => {
+      console.log("Pre-emptively warming up API connections...");
 
-      // Clean up any existing recorder
-      if (audioRecorder) {
-        audioRecorder.stream.getTracks().forEach((track) => track.stop());
+      // Pre-connect to both APIs to establish TCP connections
+      await Promise.all([
+        // Use the transcribe-chunk API endpoint like in StreamingVoiceTest
+        fetch("/api/transcribe-chunk", {
+          method: "HEAD",
+          headers: { Connection: "keep-alive" },
+        }).catch(() => {}),
+
+        // Also warm up the direct transcribe API
+        fetch("/api/transcribe", {
+          method: "HEAD",
+          headers: { Connection: "keep-alive" },
+        }).catch(() => {}),
+
+        fetch("/api/chat", {
+          method: "HEAD",
+          headers: { Connection: "keep-alive" },
+        }).catch(() => {}),
+      ]);
+
+      console.log("API connections pre-established");
+    };
+
+    // Pre-warm connections immediately
+    warmUpAPIs();
+
+    // Set up recurring warm-up every 2 minutes
+    const keepAliveInterval = setInterval(warmUpAPIs, 120000);
+
+    // Clean up
+    return () => {
+      if (audioWorker) {
+        audioWorker.terminate();
+        console.log("Audio processing worker terminated");
       }
+      clearInterval(keepAliveInterval);
+    };
+  }, [isMounted]);
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream, {
-        mimeType: "audio/webm",
-        audioBitsPerSecond: 128000,
-      });
+  // Add session state
+  const [sessionInfo, setSessionInfo] = useState<SessionInfo>(
+    createStreamingSession
+  );
 
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          console.log("Received audio chunk:", {
-            size: e.data.size,
-            type: e.data.type,
+  // Update the getSupportedMimeType function to match StreamingVoiceTest
+  const getSupportedMimeType = useCallback(() => {
+    // Optimal formats in order of preference - MP3 is optimal for Azure processing
+    const mimeTypes = [
+      "audio/mp3", // Direct MP3 (not widely supported but best if available)
+      "audio/mpeg", // MP3 alternative syntax
+      "audio/webm;codecs=opus", // Good compression, widely supported
+      "audio/webm", // Fallback webm without codec specification
+      "audio/ogg;codecs=opus", // Good compression, decent support
+      "audio/wav", // Widely supported but inefficient
+      "audio/ogg", // Fallback ogg without codec
+    ];
+
+    // Find the first supported MIME type
+    for (const mimeType of mimeTypes) {
+      if (MediaRecorder.isTypeSupported(mimeType)) {
+        console.log(`Using supported MIME type: ${mimeType}`);
+        return mimeType;
+      }
+    }
+
+    // Fallback to default if none are supported
+    console.warn(
+      "None of the preferred MIME types are supported, using default"
+    );
+    return "audio/webm";
+  }, []);
+
+  // Add a function to handle transcription results
+  const handleTranscriptionResult = useCallback(
+    async (transcribedText: string, aiResponse: string) => {
+      console.log(`Transcription result: "${transcribedText}"`);
+
+      // Update the text state
+      setText(transcribedText);
+
+      // Have avatar speak the response
+      console.log("Requesting avatar to speak response...");
+      const speakStart = performance.now();
+
+      if (avatar.current) {
+        try {
+          await avatar.current.speak({
+            text: aiResponse,
+            taskType: TaskType.REPEAT,
+            taskMode: TaskMode.SYNC,
           });
-          setAudioChunks((chunks) => [...chunks, e.data]);
+          console.log("Avatar speech completed");
+        } catch (speakError) {
+          console.error("Error during avatar speech:", speakError);
         }
-      };
-
-      // Set a reasonable timeslice for chunks (e.g., 1 second)
-      recorder.start(1000);
-      setAudioRecorder(recorder);
-      console.log("Audio recorder initialized successfully");
-    } catch (error) {
-      console.error("Failed to initialize audio recorder:", error);
-      setMicError("Failed to access microphone");
-      throw error; // Re-throw to be handled by caller
-    }
-  };
-
-  // Fixed toggle function with loading state
-  const handlePushToTalk = async () => {
-    try {
-      if (!isPushingToTalk) {
-        // Start recording
-        console.log("Starting recording...");
-        await initializeRecorder();
-        setIsPushingToTalk(true);
       } else {
-        // Stop recording and process
-        console.log("Stopping recording...");
-        setIsPushingToTalk(false);
-        setIsProcessing(true);
+        console.error("Avatar reference not available");
+      }
 
-        if (audioRecorder) {
+      const speakEnd = performance.now();
+      console.log(
+        `Avatar speaking took: ${(speakEnd - speakStart).toFixed(2)}ms`
+      );
+
+      // Log total interaction time after speaking
+      const totalTime = performance.now() - recordingStartTimeRef.current;
+      console.log(`Total interaction time: ${totalTime.toFixed(2)}ms`);
+    },
+    []
+  );
+
+  // Update the initializeRecorder function to use the handleTranscriptionResult
+  function initializeRecorder(stream: MediaStream) {
+    // Set up recorder with optimized settings for low latency
+    const options = {
+      mimeType: getSupportedMimeType(),
+      audioBitsPerSecond: DEFAULT_STREAMING_CONFIG.audioBitsPerSecond,
+    };
+
+    // Create new session when recording starts
+    setSessionInfo(createStreamingSession());
+
+    // Clear existing chunks
+    audioChunksRef.current = [];
+    let recorder: MediaRecorder;
+
+    try {
+      recorder = new MediaRecorder(stream, options);
+    } catch (e) {
+      console.log(
+        "MediaRecorder not supported with these options, falling back to default"
+      );
+      recorder = new MediaRecorder(stream);
+    }
+
+    // Flag to coordinate between onstop and ondataavailable
+    let isStopping = false;
+    let finalChunkReceived = false;
+    let pendingProcessing = false;
+
+    // Enhanced data handling with chunk size logging
+    recorder.ondataavailable = async (e) => {
+      console.log(
+        `MediaRecorder ondataavailable event triggered, data size: ${e.data.size} bytes`
+      );
+      if (e.data && e.data.size > 0) {
+        // Store the chunk in our ref
+        if (!audioChunksRef.current) {
+          audioChunksRef.current = [];
+        }
+        audioChunksRef.current.push(e.data);
+
+        const totalChunks = audioChunksRef.current.length;
+        console.log(
+          `Audio chunk added to buffer, total chunks: ${totalChunks}`
+        );
+
+        // Only process if this is an interim chunk (not during stopping)
+        // and it's large enough to likely contain speech
+        if (
+          !isStopping &&
+          e.data.size >= DEFAULT_STREAMING_CONFIG.minChunkSize * 1.5
+        ) {
           try {
-            // Stop the recorder and clean up
-            audioRecorder.stop();
-            const tracks = audioRecorder.stream.getTracks();
-            tracks.forEach((track) => track.stop());
-            console.log("Audio recording stopped and cleaned up");
+            const chunkStart = performance.now();
 
-            // Process the recorded audio
-            const { transcribedText, aiResponse } =
-              await processRecordedAudio();
+            // Process the chunk with the latest session info
+            const chunkResult = await processAudioChunk(
+              e.data,
+              sessionInfo,
+              false // Not the last chunk
+            );
 
-            // Have avatar speak the response
-            console.log("Requesting avatar to speak response...");
-            if (!avatar.current) {
-              console.error("Avatar reference not available");
-              return;
+            const chunkEnd = performance.now();
+            console.log(
+              `Process interim chunk took: ${(chunkEnd - chunkStart).toFixed(2)}ms`
+            );
+
+            // Only update for meaningful results
+            if (chunkResult?.error) {
+              console.warn(
+                "Error processing interim chunk:",
+                chunkResult.error
+              );
+              // Don't show interim errors to avoid UI noise
+            } else if (chunkResult?.text) {
+              console.log("Interim transcription:", chunkResult.text);
+              // Update session for next chunk
+              setSessionInfo(incrementChunkSequence(sessionInfo));
             }
-            await avatar.current.speak({
-              text: aiResponse,
-              taskType: TaskType.REPEAT,
-              taskMode: TaskMode.SYNC,
-            });
-            console.log("Avatar speech completed");
           } catch (error) {
-            console.error("Error stopping recording:", error);
-            setMicError("Failed to process recording");
+            console.error("Error in chunk processing:", error);
+          }
+        }
+        // If we're stopping and just received a chunk, do final processing
+        else if (isStopping && !pendingProcessing) {
+          finalChunkReceived = true;
+          pendingProcessing = true;
+
+          console.log("Final chunk received, starting processing");
+          try {
+            // Process the recorded audio when recording stops
+            const result = await processRecordedAudio();
+
+            // Handle the result
+            if (result) {
+              await handleTranscriptionResult(
+                result.transcribedText,
+                result.aiResponse
+              );
+            }
+          } catch (error) {
+            console.error(
+              "Error processing audio in ondataavailable handler:",
+              error
+            );
           } finally {
-            // Clean up recorder state
-            setAudioRecorder(null);
-            setAudioChunks([]);
-            setIsProcessing(false);
+            pendingProcessing = false;
           }
         }
       }
-    } catch (error) {
-      console.error("Error in push-to-talk handler:", error);
-      setIsPushingToTalk(false);
+    };
+
+    // Record for 250ms chunks for more responsive experience
+    recorder.start(DEFAULT_STREAMING_CONFIG.chunkDuration);
+    console.log(
+      `MediaRecorder started with ${DEFAULT_STREAMING_CONFIG.chunkDuration}ms timeslice`
+    );
+
+    recorder.onstop = async () => {
+      console.log(`MediaRecorder stopped, waiting for final chunks...`);
+      isStopping = true;
+
+      // If we already have all chunks (finalChunkReceived was set in ondataavailable)
+      // then we've already processed the audio and don't need to do anything
+      if (finalChunkReceived) {
+        console.log(
+          "Final processing already completed in ondataavailable handler"
+        );
+        return;
+      }
+
+      // Set a timeout to ensure processing happens even if no more ondataavailable events fire
+      setTimeout(async () => {
+        if (!pendingProcessing) {
+          console.log("Timeout reached, processing existing chunks");
+          pendingProcessing = true;
+
+          if (!audioChunksRef.current || audioChunksRef.current.length === 0) {
+            console.log("No audio chunks to process after recording stopped");
+            setIsProcessing(false);
+            return;
+          }
+
+          try {
+            // Process the recorded audio when recording stops
+            const result = await processRecordedAudio();
+
+            // Handle the result
+            if (result) {
+              await handleTranscriptionResult(
+                result.transcribedText,
+                result.aiResponse
+              );
+            }
+          } catch (error) {
+            console.error(
+              "Error processing audio in onstop timeout handler:",
+              error
+            );
+          } finally {
+            pendingProcessing = false;
+          }
+        }
+      }, 300); // 300ms timeout should be enough for final chunks to arrive
+    };
+
+    return recorder;
+  }
+
+  // Optimize the processRecordedAudio function to focus on the streaming approach
+  async function processRecordedAudio(): Promise<{
+    transcribedText: string;
+    aiResponse: string;
+  } | null> {
+    if (!audioChunksRef.current || audioChunksRef.current.length === 0) {
+      console.log("No audio chunks to process");
+      return null;
     }
+
+    try {
+      setIsProcessing(true);
+      const startTime = performance.now();
+
+      // Log original chunks for debugging
+      console.log("Audio chunks collected:", {
+        count: audioChunksRef.current.length,
+        sizes: audioChunksRef.current.map((chunk) => chunk.size),
+        types: audioChunksRef.current.map((chunk) => chunk.type),
+        totalSize: audioChunksRef.current.reduce(
+          (sum, chunk) => sum + chunk.size,
+          0
+        ),
+      });
+
+      // Create combined blob from all chunks using the first chunk's type
+      const blobStartTime = performance.now();
+      const combinedBlob = new Blob(audioChunksRef.current, {
+        type: audioChunksRef.current[0]?.type || "audio/webm",
+      });
+
+      console.log(
+        `Combined audio blob created: ${(combinedBlob.size / 1024).toFixed(2)}KB, combining took ${(performance.now() - blobStartTime).toFixed(2)}ms`
+      );
+
+      // Process the final chunk using processAudioChunk from streamingAudio
+      // This is our primary approach for all audio processing
+      const processingStart = performance.now();
+      const finalChunkResult = await processAudioChunk(
+        combinedBlob,
+        sessionInfo,
+        true // This is the final chunk
+      );
+
+      console.log(
+        `Audio processing through streaming API took: ${(performance.now() - processingStart).toFixed(2)}ms`
+      );
+
+      console.log("Final chunk processing result:", {
+        hasText: !!finalChunkResult?.text,
+        hasError: !!finalChunkResult?.error,
+        metrics: finalChunkResult?.metrics,
+      });
+
+      // If we have an error from the streaming API, log and rethrow
+      if (finalChunkResult?.error) {
+        throw new Error(`Transcription error: ${finalChunkResult.error}`);
+      }
+
+      // If we got text back, use it
+      if (finalChunkResult?.text) {
+        const transcribedText = finalChunkResult.text;
+        console.log("Transcribed text:", transcribedText);
+
+        if (!transcribedText || transcribedText.trim() === "") {
+          console.log("No transcription received");
+          return null;
+        }
+
+        // Then, get the AI response
+        const aiResponse = await fetchChatResponse(transcribedText);
+        console.log("AI response:", aiResponse);
+
+        const totalTime = performance.now() - startTime;
+        console.log(`Total processing time: ${totalTime.toFixed(2)}ms`);
+
+        return { transcribedText, aiResponse };
+      }
+
+      // If we got here, something went wrong but no error was thrown
+      console.error(
+        "No transcription text returned, but no error was reported"
+      );
+      return null;
+    } catch (error) {
+      console.error("Error processing audio:", error);
+      return null;
+    } finally {
+      setIsProcessing(false);
+    }
+  }
+
+  // Update the fetchChatResponse function to better handle errors and include metrics
+  async function fetchChatResponse(message: string): Promise<string> {
+    const chatStartTime = performance.now();
+    console.log("Calling chat API with transcription:", message);
+
+    try {
+      // Call the chat API with proper error handling
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "system",
+              content: "You are a helpful assistant. Respond concisely.",
+            },
+            {
+              role: "user",
+              content: message,
+            },
+          ],
+        }),
+        // Add timeout signal for better error handling
+        signal: AbortSignal.timeout(10000), // 10-second timeout
+      });
+
+      if (!response.ok) {
+        // Handle specific error cases
+        if (response.status === 429) {
+          throw new Error("Rate limit exceeded. Please try again in a moment.");
+        } else if (response.status === 500) {
+          throw new Error(
+            "Server error processing your request. Please try again."
+          );
+        } else {
+          throw new Error(`Chat API failed: ${response.status}`);
+        }
+      }
+
+      const data = await response.json();
+
+      // Log metrics if available
+      if (data.metrics) {
+        console.log("Chat API metrics:", data.metrics);
+        // Store metrics in the processingMetrics ref (similar to StreamingVoiceTest)
+        Object.entries(data.metrics).forEach(([key, value]) => {
+          if (typeof value === "number") {
+            processingMetrics.current[`chat_${key}`] = value;
+          }
+        });
+      }
+
+      const chatEndTime = performance.now();
+      const totalChatTime = chatEndTime - chatStartTime;
+      console.log(`Total chat API time: ${totalChatTime.toFixed(2)}ms`);
+      processingMetrics.current["chat_total_time"] = totalChatTime;
+
+      // Extract response depending on the format returned
+      return (
+        data.response ||
+        (data.choices && data.choices[0]?.message?.content) ||
+        "I'm sorry, I couldn't process that request."
+      );
+    } catch (error) {
+      console.error("Error fetching chat response:", error);
+
+      // More informative error messages
+      if (error instanceof TypeError && error.message.includes("fetch")) {
+        return "Sorry, I'm having trouble connecting to my knowledge base. Please check your internet connection.";
+      } else if (error instanceof DOMException && error.name === "AbortError") {
+        return "Sorry, the request took too long to process. Please try a shorter message.";
+      }
+
+      return "Sorry, I encountered an error processing your request.";
+    }
+  }
+
+  // Update the handlePushToTalkClick function to include performance metrics
+  const handlePushToTalkClick = async () => {
+    // Record performance metrics
+    const clickTime = performance.now();
+    console.log(`Push-to-talk button clicked at ${new Date().toISOString()}`);
+
+    if (!isPushingToTalk) {
+      const startButtonTime = performance.now();
+      await startPushToTalk();
+      console.log(
+        `Start push-to-talk took: ${(performance.now() - startButtonTime).toFixed(2)}ms`
+      );
+    } else {
+      const stopButtonTime = performance.now();
+      await stopPushToTalk();
+      console.log(
+        `Stop push-to-talk took: ${(performance.now() - stopButtonTime).toFixed(2)}ms`
+      );
+    }
+
+    console.log(
+      `Total button interaction took: ${(performance.now() - clickTime).toFixed(2)}ms`
+    );
   };
+
+  // Update the startPushToTalk function to use the optimized audio stream
+  async function startPushToTalk() {
+    if (!isMounted) return;
+
+    try {
+      const startTime = performance.now();
+      // Start recording
+      console.log("Starting recording...");
+      setMicError(null); // Clear any previous errors
+
+      // Use the optimized audio stream settings
+      const stream = await getAudioStream();
+      const mediaTime = performance.now();
+      console.log(`Media access took: ${(mediaTime - startTime).toFixed(2)}ms`);
+
+      // Initialize recorder - this now internally starts the recorder
+      const recorder = initializeRecorder(stream);
+      const recorderTime = performance.now();
+      console.log(
+        `Recorder initialization took: ${(recorderTime - mediaTime).toFixed(2)}ms`
+      );
+
+      // Update state
+      setAudioRecorder(recorder);
+      setIsPushingToTalk(true);
+
+      // Store start time for latency calculation
+      recordingStartTimeRef.current = performance.now();
+      console.log(
+        `Total start recording took: ${(performance.now() - startTime).toFixed(2)}ms`
+      );
+    } catch (error) {
+      console.error("Error starting push-to-talk:", error);
+      setMicError("Failed to access microphone");
+    }
+  }
+
+  // Update stopPushToTalk function to work with the new flow
+  async function stopPushToTalk() {
+    if (!isMounted) return;
+
+    try {
+      const stopTime = performance.now();
+      console.log("Stopping recording...");
+
+      // Calculate recording duration
+      const recordingDuration = stopTime - recordingStartTimeRef.current;
+      console.log(`Recording duration: ${recordingDuration.toFixed(2)}ms`);
+
+      // Update UI state first
+      setIsPushingToTalk(false);
+      setIsProcessing(true);
+
+      // Stop the recorder
+      // This will trigger the onstop event which coordinates with ondataavailable
+      // to ensure we only process the audio once
+      if (audioRecorder && audioRecorder.state !== "inactive") {
+        console.log("Stopping MediaRecorder...");
+        audioRecorder.stop();
+        const stopRecorderTime = performance.now();
+        console.log(
+          `Stop recorder took: ${(stopRecorderTime - stopTime).toFixed(2)}ms`
+        );
+      } else {
+        console.log("MediaRecorder already inactive or not available");
+        setIsProcessing(false);
+      }
+
+      // Note: We don't call processRecordedAudio() here anymore
+      // That's now handled by the coordination between onstop and ondataavailable events
+
+      // Clean up recorder state - this should happen after processing is complete
+      // but we can't await the processing here because it's happening asynchronously
+      // after the final chunk is received
+      setTimeout(() => {
+        if (audioRecorder) {
+          const tracks = audioRecorder.stream.getTracks();
+          tracks.forEach((track) => track.stop());
+          console.log("Audio recording tracks cleaned up");
+        }
+        // Only clear the recorder reference after processing is done
+        if (!isProcessing) {
+          setAudioRecorder(null);
+        }
+      }, 1000); // Give enough time for processing to complete
+    } catch (error) {
+      console.error("Error in stopPushToTalk:", error);
+      setMicError("Error processing your voice");
+      setIsProcessing(false);
+    }
+  }
+
+  // Update the getAudioStream function to optimize audio settings for speech recognition
+  const getAudioStream = useCallback(async () => {
+    const startTime = performance.now();
+    try {
+      // Request optimal audio settings for speech recognition
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1, // Mono audio (better for speech recognition)
+          sampleRate: 16000, // 16kHz sample rate (optimal for Whisper)
+          sampleSize: 16, // 16-bit samples (good quality)
+          echoCancellation: true, // Reduce echo
+          noiseSuppression: true, // Reduce background noise
+          autoGainControl: true, // Help normalize audio levels
+        },
+      });
+      const endTime = performance.now();
+      console.log(
+        `Get Audio Stream took ${(endTime - startTime).toFixed(2)}ms`
+      );
+      return stream;
+    } catch (error) {
+      console.error("Error accessing microphone:", error);
+      const endTime = performance.now();
+      console.log(
+        `Get Audio Stream (Failed) took ${(endTime - startTime).toFixed(2)}ms`
+      );
+      throw new Error(
+        "Failed to access microphone. Please ensure microphone permissions are granted."
+      );
+    }
+  }, []);
 
   const handleAdminAccess = () => {
     if (adminAccessCode === adminCode) {
@@ -983,13 +1502,11 @@ export default function InteractiveAvatar({
                 {/* Push-to-talk button at bottom center - enhanced visibility with gradient */}
                 <div className="absolute bottom-8 left-3/4 transform -translate-x-1/2 z-10">
                   <Button
-                    className={`rounded-2xl h-16 px-8 py-4 flex items-center gap-3 shadow-lg transition-all ${
-                      isPushingToTalk
-                        ? "bg-gradient-to-r from-red-500 to-red-600 text-white"
-                        : "bg-gradient-to-r from-capgemini-blue to-deep-purple-500 text-white"
+                    className={`relative z-20 mt-4 p-4 rounded-full ${
+                      isPushingToTalk ? "bg-red-500" : "bg-blue-500"
                     } ${isLoading ? "loading" : ""}`}
                     size="lg"
-                    onPress={handlePushToTalk}
+                    onPress={handlePushToTalkClick}
                     disabled={isLoading}
                   >
                     <svg

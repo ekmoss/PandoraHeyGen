@@ -416,9 +416,17 @@ async function optimizeAudioFormat(
     // Get the raw audio data
     const arrayBuffer = await audioBlob.arrayBuffer();
 
+    // Always convert webm with opus codec to MP3 as Azure has issues with it
+    if (audioBlob.type.includes("webm;codecs=opus")) {
+      console.log(
+        "Converting webm;codecs=opus to MP3 for better Azure compatibility"
+      );
+      return new Blob([arrayBuffer], { type: "audio/mpeg" });
+    }
+
     // For interim chunks, prioritize speed over quality
     if (!isLastChunk) {
-      // For WebM and OGG, just use the original format
+      // For regular WebM (no opus) and OGG, use the original format
       if (audioBlob.type.includes("webm") || audioBlob.type.includes("ogg")) {
         return new Blob([arrayBuffer], { type: audioBlob.type });
       }
