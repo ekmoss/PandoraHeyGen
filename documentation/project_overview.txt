@@ -1,0 +1,350 @@
+# Project Overview
+
+## Project Description
+Pandora is a customized version of the HeyGen Interactive Avatar demo, tailored specifically for Capgemini's trade show experience. The application provides an interactive AI avatar that can respond to voice or text input through a user-friendly interface optimized for touch screens in portrait mode.
+
+## Key Features
+- Full-screen portrait mode optimized for large touchscreen displays
+- Push-to-talk interface with simple tap-to-toggle microphone control
+- Auto-configuration with settings loaded from environment variables
+- Capgemini branding with AUNZ colors and design language
+- Admin panel accessible by typing "admin" and entering an access code
+- Voice activity detection for efficient audio processing
+- Performance optimization for low-latency responses
+- Background removal and customization options
+
+## Project Structure
+
+### Root Directory
+- package.json: Defines project dependencies and scripts for the Next.js application.
+- package-lock.json: Lock file for npm dependencies.
+- next.config.js: Configuration file for Next.js framework.
+- tailwind.config.js: Configuration for Tailwind CSS styling.
+- tsconfig.json: TypeScript configuration for the project.
+- postcss.config.js: PostCSS configuration for the CSS processing pipeline.
+- server.js: Custom server implementation for the Next.js application.
+- .env: Environment variables for the application configuration.
+- app-config.json: Contains configuration settings referenced in the codebase, but not actively loaded or used. The actual configuration comes from the defaultConfig object in app/lib/configTypes.ts.
+- README.md: Documentation about the project, setup instructions, and usage guidelines.
+
+### Main Directories
+- app/: Main application directory using Next.js App Router structure.
+- components/: Reusable React components for avatar and UI elements.
+- public/: Static assets for the website, including background images and logos.
+- services/: Service implementations for external APIs like audio recording and Azure OpenAI.
+- styles/: CSS and styling files using Tailwind CSS.
+- documentation/: Centralized location for all project documentation files.
+
+## Documentation Files
+- project_overview.txt: This document, providing an overview of the project structure and components.
+- plan.txt: Original development plan document for the project.
+- notes.txt: General development notes and observations.
+- integration_planning.txt: Planning document for service integrations.
+- optimization_analysis.txt: Analysis of performance optimization opportunities.
+- streaming-audio-implementation-plan.txt: Implementation plan for streaming audio functionality.
+- latency-optimization-log.txt: Log of latency optimization efforts.
+- latency-analysis.txt: Detailed analysis of system latency.
+
+## File Details
+
+### Components Directory
+- InteractiveAvatar.tsx: Main component that implements a streaming HeyGen avatar with optimized audio capture and processing. Handles voice input, transcription, and animated avatar responses.
+- audioWorker.ts: Web Worker implementation for processing audio off the main thread.
+- InteractiveAvatarTextInput.tsx: Component for text input interaction with the avatar.
+- InteractiveAvatarCode.tsx: Component for displaying code in the avatar interface.
+- NavBar.tsx: Navigation bar component for the application.
+- Icons.tsx: SVG icon components used throughout the application.
+- ThemeSwitch.tsx: Toggle component for switching between light and dark themes.
+
+### VoiceTest Components
+- StreamingVoiceTest.tsx: Component for testing voice streaming functionality with performance metrics. Implements voice activity detection and audio processing.
+- audioWorker.ts: Audio processing worker for VoiceTest component.
+- VoiceTest.tsx: Component for basic voice testing without streaming.
+
+### App Directory
+- layout.tsx: Root layout component for the Next.js application.
+- page.tsx: Main page component that renders the InteractiveAvatar component with default configuration.
+- providers.tsx: Provider components for global state and themes.
+- error.tsx: Error handling component for the application.
+
+### Test Pages
+- app/test-voice/page.tsx: Test page that renders the VoiceTest component for testing basic voice functionality.
+- app/test-streaming/page.tsx: Test page that renders the StreamingVoiceTest component for testing streaming voice functionality.
+
+### App/Lib Directory
+- streamingAudio.ts: Utilities for audio streaming and processing.
+- voiceActivityDetection.ts: Voice activity detection implementation for identifying speech in audio.
+- configTypes.ts: TypeScript types for application configuration, defining the AppConfig interface and default configuration settings. Contains the defaultConfig object that is actually used throughout the application.
+- configService.ts: Simple service for managing application configuration. Currently only returns the defaultConfig from configTypes.ts.
+- constants.ts: Constant values used throughout the application.
+
+### Public Directory
+- bg-lobby.png, bg-office.png, bg-maya.png: Background images for the avatar interface.
+- bg-empty-lobby.jpg: Default background for the avatar.
+- logo.png, capgemini-logo-spade.png: Logo assets for branding.
+- test-mic.js, audio-processor.js: JavaScript utilities for audio processing.
+
+### Styles Directory
+- globals.css: Global CSS styles using Tailwind CSS with custom animations for UI components.
+
+### Active API Routes
+The following API routes are actively used in production:
+
+- api/transcribe/route.ts: API route for transcribing audio files to text using Azure's OpenAI Whisper model.
+- api/chat/route.ts: API route for generating chat responses using Azure OpenAI.
+- api/transcribe-chunk/route.ts: API route for transcribing audio chunks in streaming mode.
+- api/speech-token/route.ts: API route for obtaining Azure speech service tokens.
+- api/check-azure/route.ts: API route for checking Azure OpenAI service status.
+
+### Deprecated API Routes
+The following API routes are deprecated or not used in production:
+
+- api/text-to-speech/route.ts: Placeholder route, not fully implemented.
+- api/speech-to-text/route.ts: Alternative implementation using Microsoft Cognitive Services.
+- api/get-access-token/: Not actively used in production.
+- api/process-audio/: Not actively used in production.
+- api/process-voice/: Not actively used in production.
+- api/process-conversation/: Not actively used in production.
+- api/generate-response/: Not actively used in production.
+
+### Services Directory
+- audio-recorder.ts: Service class for recording audio from the user's microphone with event handling and error management.
+- azure-openai.ts: Service class for interacting with Azure OpenAI APIs, providing methods to generate responses from text and process voice input.
+
+## Lib vs Services Redundancies and Organization
+
+### Current Organization Issues
+
+1. **Functional Overlap:**
+   - `app/lib/streamingAudio.ts` (499 lines) and `services/audio-recorder.ts` (140 lines) both handle audio recording and processing but with different approaches:
+     - `streamingAudio.ts` uses utility functions for various aspects of streaming audio processing
+     - `audio-recorder.ts` uses a class-based approach with OOP principles
+     - Both handle microphone access, MediaRecorder configuration, and audio chunks processing
+
+2. **Architectural Inconsistency:**
+   - `lib` directory contains a mix of:
+     - Utility functions (streamingAudio.ts)
+     - Class-like functionality (voiceActivityDetection.ts)
+     - Configuration (configTypes.ts, configService.ts)
+     - Constants (constants.ts)
+   - `services` directory contains:
+     - OOP service classes with methods for specific functionality
+
+3. **Missing Service Integration:**
+   - `services/azure-openai.ts` references `/api/generate-response` and `/api/process-voice` endpoints, but these endpoints handle their own implementation without using this service
+   - The actual API implementation in the API routes doesn't reference these service classes
+
+### Recommended Organization
+
+The application would benefit from a more consistent architectural approach:
+
+1. **Move all service-like functionality to `services/`:**
+   - Create an `AudioService` that combines functionality from both `streamingAudio.ts` and `audio-recorder.ts`
+   - Move Voice Activity Detection functionality to a `VoiceDetectionService` in the services directory
+   - Keep the `AzureOpenAIService` but ensure API endpoints use it
+
+2. **Keep `lib/` for pure utilities and configuration:**
+   - Configuration (configTypes.ts, configService.ts)
+   - Constants (constants.ts)
+   - Helper functions and types shared across multiple services
+   - Pure utility functions that don't involve browser APIs or external services
+
+3. **Separate interfaces/types:**
+   - Consider moving interfaces and types to a dedicated `types/` directory or `lib/types/`
+   - This would make it easier to maintain type definitions and prevent circular dependencies
+
+4. **Service registration system:**
+   - Create a simple service registry for better dependency injection
+   - This would make it easier to mock services for testing
+
+5. **Standardize on either functional or OOP approach:**
+   - Currently the codebase mixes functional programming (utility functions) with OOP (service classes)
+   - Recommend standardizing on OOP for services since this provides better encapsulation
+   - Keep utility functions for helpers that don't need state
+
+### Specific Improvements
+
+1. **Audio Processing Consolidation:**
+   ```typescript
+   // services/AudioService.ts
+   export class AudioService {
+     // Combine functionality from streamingAudio.ts and audio-recorder.ts
+     // Use OOP approach with methods that align with the existing patterns
+   }
+   ```
+
+2. **Voice Activity Detection:**
+   ```typescript
+   // services/VoiceDetectionService.ts
+   export class VoiceDetectionService {
+     // Wrap voiceActivityDetection.ts functionality in a class
+     // Provide methods that match the existing API but with better encapsulation
+   }
+   ```
+
+3. **Configuration Service Enhancement:**
+   ```typescript
+   // services/ConfigService.ts
+   export class ConfigService {
+     // Actually load config from app-config.json
+     // Merge with environment variables
+     // Provide typed access to configuration
+   }
+   ```
+
+## Service Integration
+
+### HeyGen Integration
+HeyGen Streaming Avatar is only used on the frontend for rendering and animating the avatar to speak with lip-syncing. No processing or logic from HeyGen is used for generating responses.
+
+### Azure Services Integration
+Azure services are responsible for:
+1. Transcribing speech to text using Azure OpenAI Whisper model
+2. Processing text through Azure OpenAI chat completion to generate responses
+
+The complete flow:
+1. User speaks into microphone
+2. Audio is processed and sent to Azure Whisper for transcription
+3. Transcribed text is sent to Azure OpenAI for generating a response
+4. Response is passed to HeyGen avatar for lip-synced animation
+
+## Deployment
+The application is deployed as an Azure Web App.
+
+## Configuration System
+The application uses a typed configuration system defined in app/lib/configTypes.ts:
+
+1. AppConfig interface defines all configurable aspects including:
+   - Avatar settings (ID, language, background)
+   - Admin panel settings
+   - UI elements (titles, buttons, backgrounds)
+   - Content (conversation starters, loading messages)
+
+2. Configuration implementation:
+   - Configuration values are defined in the app-config.json file at the project root
+   - The ConfigService (app/lib/configService.ts) loads and merges configuration with default values
+   - The defaultConfig object in configTypes.ts serves as a fallback when file loading fails
+   - The getConfig() function loads settings from app-config.json and applies defaults for missing values
+   - The updateConfig() function allows saving changes to the configuration file
+
+3. How to modify configuration:
+   - Edit app-config.json directly for permanent configuration changes
+   - Use the ConfigService.updateConfig() method to update configuration programmatically
+   - Default values in configTypes.ts should only be modified when adding new configuration options
+
+4. How configuration is used:
+   - Components import and call getConfig() from ConfigService
+   - UI elements like logos, backgrounds, and text are set based on config values
+   - Admin panel password is specified in the config
+   - Avatar settings (ID, language, etc.) come from the config
+
+## Application Flow
+1. The main application renders the InteractiveAvatar component on the home page.
+2. The InteractiveAvatar component provides a user interface for interacting with a virtual avatar using voice or text input.
+3. When a user speaks, the audio is processed through a pipeline that:
+   - Captures audio from the microphone
+   - Processes it using Web Workers (when available)
+   - Sends it to Azure services for transcription (via /api/transcribe)
+   - Gets a response from OpenAI (via /api/chat)
+   - Animates the avatar to speak the response
+4. The application also provides separate test pages for testing voice functionality without the avatar UI.
+
+## Performance Optimization Features
+1. Web Worker audio processing: Audio processing is offloaded to Web Workers to free up the main thread.
+2. LRU caching: Chat responses are cached to improve performance for repeated queries.
+3. Optimized API parameters: Default parameters are provided to the OpenAI API for faster responses.
+4. Connection reuse: HTTP connection keep-alive is used to reduce connection establishment overhead.
+5. Detailed performance metrics: All operations are timed and metrics are returned with API responses.
+6. Voice Activity Detection (VAD): Used to detect when a user is speaking to optimize recording.
+7. Streaming mode: Audio is processed in chunks during recording to minimize latency.
+8. Optimized parameter profiles: Different parameters are used for interim vs. final audio chunks.
+9. In-memory caching: Session data and transcription results are cached in memory for faster retrieval.
+10. Connection pooling: Active connections are tracked and reused to avoid reconnection overhead.
+
+## Identified Issues and Refactoring Needs
+
+### Issues
+1. Duplicate Implementations: 
+   - The original streaming functionality was developed in the test-streaming page (StreamingVoiceTest.tsx)
+   - When implementing in the main application, code was recreated in InteractiveAvatar.tsx instead of being modularized
+   - This led to duplicate code, making maintenance more difficult
+
+2. Code Structure:
+   - Audio processing logic is duplicated across components
+   - Web Worker implementations are duplicated
+   - API routes with similar functionality exist
+
+3. Documentation:
+   - Lack of clear documentation for new developers
+   - Unclear which components are in active use vs. testing/deprecated
+
+4. Configuration Management:
+   - The app-config.json file exists but is not actually used
+   - Configuration is hardcoded in the configTypes.ts file
+   - No mechanism to load configuration from external sources
+
+5. Service Architecture:
+   - Inconsistent approach to services (mix of functional and OOP styles)
+   - Redundant functionality between lib and services directories
+   - Lack of proper service dependencies and injection
+
+### Refactoring Plan
+
+#### 1. Code Consolidation (High Priority)
+- ✅ Create a shared audio processing module (services/AudioService.ts) that combines functionality from both streamingAudio.ts and audio-recorder.ts
+- ✅ Create React hook (hooks/useAudioService.ts) for easy integration in components
+- ✅ Refactor existing StreamingVoiceTest component to use the new AudioService via the hook
+- Next: Refactor InteractiveAvatar.tsx to use the AudioService instead of direct audio handling
+- Merge duplicate Web Worker implementations into a single, well-documented version
+- Remove or clearly mark deprecated API routes
+- Extract common functionality from API routes into shared utility functions
+
+#### 2. Component Structure Improvement
+- ✅ Extract audio processing logic into a custom hook (useAudioService)
+- ✅ Create a clear separation between UI components and service logic with the hook pattern
+- Next: Apply the same pattern to refactor InteractiveAvatar.tsx to be more modular
+
+#### 3. API Cleanup
+- Remove unused/deprecated API routes
+- Standardize API response formats
+- Improve error handling and logging
+
+#### 4. Configuration Improvement
+- ✅ Implement proper loading of configuration from app-config.json
+- ✅ Add environment variable overrides for configuration settings
+- ✅ Create a configuration loading mechanism in configService.ts 
+- ✅ Remove hardcoded default values or move them to appropriate fallback positions
+
+#### 5. Service Architecture Reorganization
+- ✅ Standardize on a consistent architectural approach (OOP for services)
+- ✅ Merge redundant audio processing functionality into AudioService
+- Create a proper service dependency system
+- Move browser API interactions (audio, speech, etc.) into dedicated services
+- Ensure API routes use the service classes
+
+#### 6. Documentation Improvements
+- Add inline documentation to all major components and functions
+- Create a developer onboarding guide
+- Add architecture diagrams showing component relationships
+
+#### 7. Testing Infrastructure
+- Add unit tests for core functionality
+- Create integration tests for the audio processing pipeline
+- Set up CI/CD pipeline with automated testing
+
+## Dependencies
+1. Frontend Framework:
+   - Next.js 14.2
+   - React 18.3
+   - TypeScript
+
+2. UI Components:
+   - NextUI library for UI components
+   - Tailwind CSS for styling
+   - Framer Motion for animations
+
+3. External Services:
+   - HeyGen Streaming Avatar (@heygen/streaming-avatar)
+   - Azure OpenAI for AI responses
+   - Microsoft Cognitive Services Speech SDK for speech recognition
+   - Azure Storage Blob for file storage 

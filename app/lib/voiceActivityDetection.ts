@@ -3,6 +3,10 @@
  *
  * This module provides real-time speech detection capabilities to improve
  * the latency of audio processing by detecting when a user starts and stops speaking.
+ *
+ * @deprecated This module is being replaced by the AudioService in /services/AudioService.ts
+ * Please update your imports to use the new service via the useAudioService hook.
+ * Example: import { useAudioService } from '@/hooks/useAudioService';
  */
 
 interface VADOptions {
