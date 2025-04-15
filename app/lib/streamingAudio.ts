@@ -1,3 +1,8 @@
+/**
+ * @deprecated This module is being replaced by the AudioService in /services/AudioService.ts
+ * Please update your imports to use the new service via the useAudioService hook.
+ * Example: import { useAudioService } from '@/hooks/useAudioService';
+ */
 import { v4 as uuidv4 } from "uuid";
 
 /**

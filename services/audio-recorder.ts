@@ -1,5 +1,9 @@
 /**
  * Handles audio recording functionality for voice input
+ *
+ * @deprecated This class is being replaced by the AudioService in /services/AudioService.ts
+ * Please update your imports to use the new service via the useAudioService hook.
+ * Example: import { useAudioService } from '@/hooks/useAudioService';
  */
 export class AudioRecorder {
   private mediaRecorder: MediaRecorder | null = null;
