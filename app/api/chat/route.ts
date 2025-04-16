@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 
+// Add streaming support for OpenAI
+import { StreamingTextResponse } from "ai";
+
 // Add LRU cache for repeated queries
 import { LRUCache } from "lru-cache";
 
@@ -28,6 +31,11 @@ export async function POST(request: Request) {
     const parseRequestStartTime = performance.now();
     const requestData = await request.json();
     metrics.parseRequest = performance.now() - parseRequestStartTime;
+
+    // Check for pre-connection request (used to warm up connections)
+    if (requestData.preConnect) {
+      return NextResponse.json({ success: true });
+    }
 
     // Get environment variables
     const getEnvStartTime = performance.now();
@@ -74,6 +82,9 @@ export async function POST(request: Request) {
       ];
     }
 
+    // Check if we should use streaming
+    const enableStreaming = requestData.stream === true;
+
     // Apply optimized parameters to user request
     const optimizedRequestData = {
       messages: messages,
@@ -83,12 +94,14 @@ export async function POST(request: Request) {
       max_tokens: requestData.max_tokens ?? OPTIMIZED_MODEL_PARAMS.max_tokens,
       presence_penalty: OPTIMIZED_MODEL_PARAMS.presence_penalty,
       frequency_penalty: OPTIMIZED_MODEL_PARAMS.frequency_penalty,
+      stream: enableStreaming,
     };
 
     console.log("Sending optimized request to Azure OpenAI:", {
       endpoint: apiUrl,
       messageCount: optimizedRequestData.messages.length,
       userMessage: messages[messages.length - 1]?.content?.slice(0, 50) + "...",
+      streaming: enableStreaming,
     });
 
     metrics.prepareRequest = performance.now() - prepareRequestStartTime;
@@ -106,7 +119,7 @@ export async function POST(request: Request) {
         "Content-Type": "application/json",
         "api-key": apiKey,
         Connection: "keep-alive",
-        Accept: "application/json",
+        Accept: enableStreaming ? "text/event-stream" : "application/json",
       },
       body: JSON.stringify(optimizedRequestData),
       signal: controller.signal,
@@ -122,7 +135,74 @@ export async function POST(request: Request) {
       throw new Error(`Chat API error: ${response.status} - ${errorText}`);
     }
 
-    // Parse response
+    // For streaming responses, directly pipe the stream to the client
+    if (enableStreaming) {
+      // Return a streaming response using the StreamingTextResponse utility
+      const transformedStream = new TransformStream({
+        start(controller) {
+          const textEncoder = new TextEncoder();
+          let buffer = "";
+
+          response
+            .body!.pipeTo(
+              new WritableStream({
+                write(chunk) {
+                  // Decode the chunk as UTF-8 text
+                  const text = new TextDecoder().decode(chunk);
+                  buffer += text;
+
+                  // Find complete events
+                  const events = buffer.split("\n\n");
+                  buffer = events.pop() || ""; // Keep the last incomplete event
+
+                  for (const event of events) {
+                    if (event.trim() === "") continue;
+                    if (event.trim() === "data: [DONE]") continue;
+
+                    const dataMatch = event.match(/^data: (.+)$/m);
+                    if (!dataMatch) continue;
+
+                    try {
+                      const data = JSON.parse(dataMatch[1]);
+                      const content = data.choices?.[0]?.delta?.content;
+
+                      if (content) {
+                        controller.enqueue(
+                          textEncoder.encode(
+                            `data: ${JSON.stringify({ content })}\n\n`
+                          )
+                        );
+                      }
+                    } catch (error) {
+                      console.error("Error parsing streaming response", error);
+                    }
+                  }
+                },
+                close() {
+                  controller.enqueue(textEncoder.encode("data: [DONE]\n\n"));
+                  // Use terminate instead of close for TransformStreamDefaultController
+                  setTimeout(() => {
+                    try {
+                      // Signal end of stream
+                      controller.terminate();
+                    } catch (e) {
+                      console.error("Error terminating stream controller:", e);
+                    }
+                  }, 10);
+                },
+              })
+            )
+            .catch((err) => {
+              console.error("Stream processing error", err);
+              controller.error(err);
+            });
+        },
+      });
+
+      return new StreamingTextResponse(transformedStream.readable);
+    }
+
+    // Parse response for non-streaming
     const parseResponseStartTime = performance.now();
     const data = await response.json();
     metrics.parseResponse = performance.now() - parseResponseStartTime;
