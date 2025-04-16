@@ -1,5 +1,6 @@
+"use client";
+
 import dynamic from "next/dynamic";
-import { getConfig } from "@/app/lib/configService";
 import { AppConfig, defaultConfig } from "@/app/lib/configTypes";
 import { useEffect, useState } from "react";
 
@@ -10,19 +11,32 @@ const InteractiveAvatar = dynamic(
 );
 
 export default function App() {
-  // In a server component, we need to provide a default while loading
-  // Client-side useEffect will handle loading the config
   const [config, setConfig] = useState<AppConfig>(defaultConfig);
   const [configLoaded, setConfigLoaded] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
 
-  // Load config on the client side
+  // Load config from API route instead of direct server function
   useEffect(() => {
     async function loadConfig() {
       try {
-        const loadedConfig = await getConfig();
+        const response = await fetch("/api/get-config");
+
+        if (!response.ok) {
+          throw new Error(
+            `Config API returned ${response.status}: ${response.statusText}`
+          );
+        }
+
+        const loadedConfig = await response.json();
         setConfig(loadedConfig);
+        setConfigError(null);
       } catch (error) {
         console.error("Failed to load config:", error);
+        setConfigError(
+          error instanceof Error
+            ? error.message
+            : "Unknown error loading configuration"
+        );
         // Fallback to default config already set
       } finally {
         setConfigLoaded(true);
@@ -37,7 +51,14 @@ export default function App() {
       <div className="w-full h-full flex items-center justify-center">
         <div className="w-full h-full max-h-screen">
           {configLoaded ? (
-            <InteractiveAvatar initialConfig={config} />
+            configError ? (
+              <div className="flex items-center justify-center h-full w-full text-white flex-col">
+                <div className="text-xl mb-4">Error loading configuration</div>
+                <div className="text-red-400">{configError}</div>
+              </div>
+            ) : (
+              <InteractiveAvatar initialConfig={config} />
+            )
           ) : (
             <div className="flex items-center justify-center h-full w-full text-white">
               Loading configuration...
