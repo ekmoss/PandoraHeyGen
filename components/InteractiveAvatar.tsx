@@ -805,9 +805,6 @@ export default function InteractiveAvatar({
       audioBitsPerSecond: DEFAULT_STREAMING_CONFIG.audioBitsPerSecond,
     };
 
-    // Create new session when recording starts
-    setSessionInfo(createStreamingSession());
-
     // Clear existing chunks
     audioChunksRef.current = [];
     let recorder: MediaRecorder;
@@ -821,147 +818,35 @@ export default function InteractiveAvatar({
       recorder = new MediaRecorder(stream);
     }
 
-    // Flag to coordinate between onstop and ondataavailable
-    let isStopping = false;
-    let finalChunkReceived = false;
-    let pendingProcessing = false;
-
-    // Enhanced data handling with chunk size logging
-    recorder.ondataavailable = async (e) => {
-      console.log(
-        `MediaRecorder ondataavailable event triggered, data size: ${e.data.size} bytes`
-      );
+    // Simple event handlers - no coordination complexity
+    recorder.ondataavailable = (e) => {
+      console.log(`AudioChunk received: ${e.data.size} bytes`);
       if (e.data && e.data.size > 0) {
-        // Store the chunk in our ref
-        if (!audioChunksRef.current) {
-          audioChunksRef.current = [];
-        }
         audioChunksRef.current.push(e.data);
-
-        const totalChunks = audioChunksRef.current.length;
-        console.log(
-          `Audio chunk added to buffer, total chunks: ${totalChunks}`
-        );
-
-        // Only process if this is an interim chunk (not during stopping)
-        // and it's large enough to likely contain speech
-        if (
-          !isStopping &&
-          e.data.size >= DEFAULT_STREAMING_CONFIG.minChunkSize * 1.5
-        ) {
-          try {
-            const chunkStart = performance.now();
-
-            // Process the chunk with the latest session info
-            const chunkResult = await processAudioChunk(
-              e.data,
-              sessionInfo,
-              false // Not the last chunk
-            );
-
-            const chunkEnd = performance.now();
-            console.log(
-              `Process interim chunk took: ${(chunkEnd - chunkStart).toFixed(2)}ms`
-            );
-
-            // Only update for meaningful results
-            if (chunkResult?.error) {
-              console.warn(
-                "Error processing interim chunk:",
-                chunkResult.error
-              );
-              // Don't show interim errors to avoid UI noise
-            } else if (chunkResult?.text) {
-              console.log("Interim transcription:", chunkResult.text);
-              // Update session for next chunk
-              setSessionInfo(incrementChunkSequence(sessionInfo));
-            }
-          } catch (error) {
-            console.error("Error in chunk processing:", error);
-          }
-        }
-        // If we're stopping and just received a chunk, do final processing
-        else if (isStopping && !pendingProcessing) {
-          finalChunkReceived = true;
-          pendingProcessing = true;
-
-          console.log("Final chunk received, starting processing");
-          try {
-            // Process the recorded audio when recording stops
-            const result = await processRecordedAudio();
-
-            // Handle the result
-            if (result) {
-              await handleTranscriptionResult(
-                result.transcribedText,
-                result.aiResponse
-              );
-            }
-          } catch (error) {
-            console.error(
-              "Error processing audio in ondataavailable handler:",
-              error
-            );
-          } finally {
-            pendingProcessing = false;
-          }
-        }
       }
     };
-
-    // Record for 250ms chunks for more responsive experience
-    recorder.start(DEFAULT_STREAMING_CONFIG.chunkDuration);
-    console.log(
-      `MediaRecorder started with ${DEFAULT_STREAMING_CONFIG.chunkDuration}ms timeslice`
-    );
 
     recorder.onstop = async () => {
-      console.log(`MediaRecorder stopped, waiting for final chunks...`);
-      isStopping = true;
+      console.log("MediaRecorder stopped, processing audio...");
 
-      // If we already have all chunks (finalChunkReceived was set in ondataavailable)
-      // then we've already processed the audio and don't need to do anything
-      if (finalChunkReceived) {
-        console.log(
-          "Final processing already completed in ondataavailable handler"
-        );
-        return;
-      }
+      // Process the recorded audio immediately
+      try {
+        const result = await processRecordedAudio();
 
-      // Set a timeout to ensure processing happens even if no more ondataavailable events fire
-      setTimeout(async () => {
-        if (!pendingProcessing) {
-          console.log("Timeout reached, processing existing chunks");
-          pendingProcessing = true;
-
-          if (!audioChunksRef.current || audioChunksRef.current.length === 0) {
-            console.log("No audio chunks to process after recording stopped");
-            setIsProcessing(false);
-            return;
-          }
-
-          try {
-            // Process the recorded audio when recording stops
-            const result = await processRecordedAudio();
-
-            // Handle the result
-            if (result) {
-              await handleTranscriptionResult(
-                result.transcribedText,
-                result.aiResponse
-              );
-            }
-          } catch (error) {
-            console.error(
-              "Error processing audio in onstop timeout handler:",
-              error
-            );
-          } finally {
-            pendingProcessing = false;
-          }
+        if (result) {
+          await handleTranscriptionResult(
+            result.transcribedText,
+            result.aiResponse
+          );
         }
-      }, 300); // 300ms timeout should be enough for final chunks to arrive
+      } catch (error) {
+        console.error("Error processing audio in onstop handler:", error);
+      }
     };
+
+    // Use a smaller timeslice for more responsive experience but not too small to avoid overhead
+    recorder.start(350);
+    console.log(`MediaRecorder started with 350ms timeslice`);
 
     return recorder;
   }
@@ -976,80 +861,102 @@ export default function InteractiveAvatar({
       return null;
     }
 
+    setIsProcessing(true);
+    const startTime = performance.now();
+    console.log(`Processing ${audioChunksRef.current.length} audio chunks`);
+
     try {
-      setIsProcessing(true);
-      const startTime = performance.now();
-
-      // Log original chunks for debugging
-      console.log("Audio chunks collected:", {
-        count: audioChunksRef.current.length,
-        sizes: audioChunksRef.current.map((chunk) => chunk.size),
-        types: audioChunksRef.current.map((chunk) => chunk.type),
-        totalSize: audioChunksRef.current.reduce(
-          (sum, chunk) => sum + chunk.size,
-          0
-        ),
-      });
-
-      // Create combined blob from all chunks using the first chunk's type
-      const blobStartTime = performance.now();
-      const combinedBlob = new Blob(audioChunksRef.current, {
-        type: audioChunksRef.current[0]?.type || "audio/webm",
-      });
-
+      // Create a single blob from all chunks - use MP3 format where supported for better compatibility
+      const mimeType = getSupportedMimeType();
+      const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
       console.log(
-        `Combined audio blob created: ${(combinedBlob.size / 1024).toFixed(2)}KB, combining took ${(performance.now() - blobStartTime).toFixed(2)}ms`
+        `Audio blob created: ${audioBlob.size} bytes, type: ${mimeType}`
       );
 
-      // Process the final chunk using processAudioChunk from streamingAudio
-      // This is our primary approach for all audio processing
-      const processingStart = performance.now();
-      const finalChunkResult = await processAudioChunk(
-        combinedBlob,
-        sessionInfo,
-        true // This is the final chunk
-      );
-
+      const blobCreationTime = performance.now();
       console.log(
-        `Audio processing through streaming API took: ${(performance.now() - processingStart).toFixed(2)}ms`
+        `Blob creation took: ${(blobCreationTime - startTime).toFixed(2)}ms`
       );
 
-      console.log("Final chunk processing result:", {
-        hasText: !!finalChunkResult?.text,
-        hasError: !!finalChunkResult?.error,
-        metrics: finalChunkResult?.metrics,
+      // Skip streaming API and go directly to transcription API for faster results
+      const transcribeStartTime = performance.now();
+      console.log("Sending audio directly to transcription API...");
+
+      // Create form data with the audio blob
+      const formData = new FormData();
+      formData.append("file", audioBlob, "audio.mp3");
+
+      // Set a reasonable timeout for transcription
+      const transcribeController = new AbortController();
+      const timeout = setTimeout(() => transcribeController.abort(), 8000);
+
+      // Direct transcription API call
+      const transcribeResponse = await fetch("/api/transcribe", {
+        method: "POST",
+        body: formData,
+        signal: transcribeController.signal,
       });
 
-      // If we have an error from the streaming API, log and rethrow
-      if (finalChunkResult?.error) {
-        throw new Error(`Transcription error: ${finalChunkResult.error}`);
+      clearTimeout(timeout);
+
+      if (!transcribeResponse.ok) {
+        throw new Error(`Transcription failed: ${transcribeResponse.status}`);
       }
 
-      // If we got text back, use it
-      if (finalChunkResult?.text) {
-        const transcribedText = finalChunkResult.text;
-        console.log("Transcribed text:", transcribedText);
+      const transcribeData = await transcribeResponse.json();
+      const transcribedText = transcribeData.text;
 
-        if (!transcribedText || transcribedText.trim() === "") {
-          console.log("No transcription received");
-          return null;
-        }
+      const transcribeEndTime = performance.now();
+      console.log(
+        `Transcription took: ${(transcribeEndTime - transcribeStartTime).toFixed(2)}ms`
+      );
+      console.log("Transcribed text:", transcribedText);
 
-        // Then, get the AI response
-        const aiResponse = await fetchChatResponse(transcribedText);
-        console.log("AI response:", aiResponse);
-
-        const totalTime = performance.now() - startTime;
-        console.log(`Total processing time: ${totalTime.toFixed(2)}ms`);
-
-        return { transcribedText, aiResponse };
+      if (!transcribedText) {
+        console.log("No text transcribed from audio");
+        return null;
       }
 
-      // If we got here, something went wrong but no error was thrown
-      console.error(
-        "No transcription text returned, but no error was reported"
+      // Fetch AI response
+      const chatStartTime = performance.now();
+      console.log("Fetching AI response...");
+
+      const chatController = new AbortController();
+      const chatTimeout = setTimeout(() => chatController.abort(), 10000);
+
+      const chatResponse = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: transcribedText }],
+        }),
+        signal: chatController.signal,
+      });
+
+      clearTimeout(chatTimeout);
+
+      if (!chatResponse.ok) {
+        throw new Error(`Chat API failed: ${chatResponse.status}`);
+      }
+
+      const chatData = await chatResponse.json();
+      const aiResponse = chatData.text || "";
+
+      const chatEndTime = performance.now();
+      console.log(
+        `AI response took: ${(chatEndTime - chatStartTime).toFixed(2)}ms`
       );
-      return null;
+
+      // Total processing time
+      const totalTime = chatEndTime - startTime;
+      console.log(`Total processing time: ${totalTime.toFixed(2)}ms`);
+
+      return {
+        transcribedText,
+        aiResponse,
+      };
     } catch (error) {
       console.error("Error processing audio:", error);
       return null;

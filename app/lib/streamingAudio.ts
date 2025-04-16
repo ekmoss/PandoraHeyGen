@@ -18,14 +18,14 @@ export interface StreamingAudioConfig {
  * Default configuration for streaming audio
  */
 export const DEFAULT_STREAMING_CONFIG: StreamingAudioConfig = {
-  chunkDuration: 250, // Reduce from 300ms to 250ms for more frequent chunks
-  minChunkSize: 800, // Reduce from 1200 to 800 to process more chunks
-  audioBitsPerSecond: 24000, // Reduce from 32kbps to 24kbps - better speed/quality balance
-  mimeType: "audio/mp3", // Use MP3 as the preferred format for Azure compatibility
+  chunkDuration: 250, // Shorter chunks (250ms) for more responsive experience
+  minChunkSize: 600, // Lower minimum size to process more chunks
+  audioBitsPerSecond: 24000, // 24kbps - good balance of quality and size
+  mimeType: "audio/mp3", // MP3 is better supported by Azure than WebM
   sessionTimeout: 5 * 60 * 1000, // 5 minutes
-  vadEnabled: false, // Disable VAD by default as it may add latency
-  vadSensitivity: 0.7, // Medium-high sensitivity (0-1)
-  processingTimeout: 2000, // Reduce timeout from 3s to 2s for faster error detection
+  vadEnabled: false, // Disable VAD by default for lower latency
+  vadSensitivity: 0.7, // Medium-high sensitivity
+  processingTimeout: 2000, // 2 second timeout for faster error detection
 };
 
 /**

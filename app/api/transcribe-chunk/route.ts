@@ -49,16 +49,18 @@ const API_OPTIMIZATION_PROFILES = {
     compression_ratio_threshold: 2.4, // Less strict compression ratio check
     logprob_threshold: -1.0, // Less strict probability threshold
     no_speech_threshold: 0.6, // Less strict no_speech detection
+    prompt: "The audio contains short spoken English.", // Add a prompt to guide the model
   },
   final: {
-    temperature: 0.5, // Balance between speed and accuracy
-    beam_size: 3, // Reasonable beam search for accuracy while still fast
+    temperature: 0.0, // Zero temperature for fastest, most deterministic results
+    beam_size: 1, // Single beam for speed
     response_format: "json", // Request JSON for faster parsing
     best_of: 1, // Don't generate alternatives
-    patience: 0.7, // Better patience value for final chunks
-    compression_ratio_threshold: 2.2, // Slightly less strict than default
+    patience: 0.1, // Lower patience value for even final chunks
+    compression_ratio_threshold: 2.4, // Less strict compression ratio check
     logprob_threshold: -1.0, // Less strict probability threshold
-    no_speech_threshold: 0.5, // Slightly stricter for final chunks
+    no_speech_threshold: 0.6, // Less strict no_speech detection
+    prompt: "The audio contains short spoken English.", // Add a prompt to guide the model
   },
 };
 
@@ -107,20 +109,58 @@ export async function POST(request: Request) {
     const sessionId = formData.get("sessionId") as string;
     const chunkSequence = parseInt(formData.get("chunkSequence") as string);
     const isLastChunk = formData.get("isLastChunk") === "true";
-    metrics.chunkSequence =
-      performance.now() - metrics.parseFormData - startTime;
+    metrics.getSessionInfo =
+      performance.now() - startTime - metrics.parseFormData;
 
     // Get the audio file from the form data
     const audioFile = formData.get("file") as Blob;
-
-    // Create a new blob with the explicit type to ensure proper handling
+    const fileSize = audioFile.size;
     const fileType = audioFile.type;
-    let fileExtension = "webm"; // Default to webm
 
-    // Check the MIME type of the audio file - use fast path for small files
+    // Fast format detection using includes instead of regex
+    let fileExtension = "mp3"; // Default to MP3 as it works best with Azure
+    metrics.audioSize = fileSize;
+    // Don't store the full string in metrics, just a format identifier
+    metrics.audioFormatId = fileType.includes("mp3")
+      ? 1
+      : fileType.includes("webm")
+        ? 2
+        : fileType.includes("wav")
+          ? 3
+          : fileType.includes("ogg")
+            ? 4
+            : 0;
+    metrics.isLastChunkFlag = isLastChunk ? 1 : 0;
+
+    // Generate cache key and check if we already have this transcription
+    const cacheKey = getTranscriptionCacheKey(
+      fileSize,
+      fileType,
+      sessionId,
+      chunkSequence
+    );
+    const cachedResult = transcriptionCache.get(cacheKey);
+
+    if (cachedResult) {
+      console.log("✅ Using cached transcription for", cacheKey);
+      metrics.cacheHit = 1;
+      metrics.processingTime = performance.now() - startTime;
+
+      // Add cache hit timing
+      return NextResponse.json({
+        ...cachedResult.result,
+        metrics: {
+          ...cachedResult.result.metrics,
+          cacheHit: 1,
+          totalWithCache: metrics.processingTime,
+        },
+      });
+    }
+
+    metrics.cacheHit = 0;
     const detectStart = performance.now();
 
-    // Fast path detection using includes instead of regex
+    // Super fast MIME type detection
     if (fileType.includes("mp3") || fileType.includes("mpeg")) {
       fileExtension = "mp3";
     } else if (fileType.includes("wav")) {
@@ -133,12 +173,7 @@ export async function POST(request: Request) {
 
     metrics.detectFormat = performance.now() - detectStart;
 
-    // Log detected audio format
-    console.log(
-      `Detected audio format: ${fileType}, using extension: ${fileExtension}`
-    );
-
-    // Prepare the form data for the API request - optimize for speed
+    // Prepare the form data for the API request
     const apiFormData = new FormData();
     apiFormData.append("file", audioFile, `audio.${fileExtension}`);
     apiFormData.append("model", "whisper-1");
@@ -158,7 +193,7 @@ export async function POST(request: Request) {
     metrics.formatProcessingTime =
       formatProcessingTime -
       metrics.detectFormat -
-      metrics.chunkSequence -
+      metrics.getSessionInfo -
       metrics.parseFormData -
       startTime;
 
@@ -181,9 +216,8 @@ export async function POST(request: Request) {
     // Ultra-optimized API URL with efficient connection parameters
     const apiUrl = `${apiEndpoint}/openai/deployments/${deploymentName}/audio/transcriptions?api-version=${apiVersion}`;
 
-    // Set reasonable timeout based on chunk type
-    // Not too aggressive, but still optimized
-    const timeoutMs = isLastChunk ? 6000 : 2000; // 6s for final, 2s for interim
+    // Set aggressive timeout based on chunk type
+    const timeoutMs = isLastChunk ? 4000 : 1500; // 4s for final, 1.5s for interim - more aggressive
 
     // Add connection optimization headers
     const requestHeaders = {
@@ -223,28 +257,40 @@ export async function POST(request: Request) {
     const data = await response.json();
     metrics.parseTime = performance.now() - parseStart;
 
-    // Add audio file size to metrics
-    metrics.audioSize = audioFile.size;
-
     const endTime = performance.now();
     metrics.processingTime = endTime - startTime;
+    metrics.azureApiCall = metrics.fetchTime - 50; // Subtract estimated network latency
 
-    // Estimate Azure API call time (fetch time minus network overhead)
-    metrics.azureApiCall = metrics.fetchTime - 100; // Subtract estimated network latency
-
-    // Return the transcription data and metrics
-    return NextResponse.json({
+    // Prepare result to return
+    const result = {
       success: true,
       text: data.text,
       sessionId,
       chunkSequence,
       isLastChunk,
       metrics,
-    });
+    };
+
+    // Cache successful transcriptions
+    if (data.text && data.text.trim() !== "") {
+      transcriptionCache.set(cacheKey, {
+        result,
+        timestamp: Date.now(),
+      });
+    }
+
+    // Track successful format combinations for future reference
+    if (data.text) {
+      successfulFormats.add(`${fileType}->${fileExtension}`);
+    }
+
+    // Return the transcription data and metrics
+    return NextResponse.json(result);
   } catch (error: any) {
     console.error("Error in transcribe-chunk API:", error);
 
     const errorMessage = error instanceof Error ? error.message : String(error);
+    metrics.error = 1;
 
     // Add any collected metrics to the error response
     return NextResponse.json(
