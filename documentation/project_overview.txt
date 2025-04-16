@@ -93,15 +93,31 @@ The following API routes are actively used in production:
 - api/transcribe/route.ts: API route for transcribing audio files to text using Azure's OpenAI Whisper model.
 - api/chat/route.ts: API route for generating chat responses using Azure OpenAI.
 - api/transcribe-chunk/route.ts: API route for transcribing audio chunks in streaming mode.
-- api/speech-token/route.ts: API route for obtaining Azure speech service tokens.
+- api/speech-token/route.ts: API route for obtaining Azure speech service tokens for speech-to-text functionality.
+- api/get-access-token/route.ts: API route for obtaining HeyGen API tokens used by the StreamingAvatar component.
 - api/check-azure/route.ts: API route for checking Azure OpenAI service status.
+
+### Token API Routes
+The application uses two distinct token routes for different services:
+
+1. **/api/get-access-token**: 
+   - Returns HeyGen API tokens required for the StreamingAvatar component
+   - Uses the HEYGEN_API_KEY environment variable
+   - Called during avatar initialization in InteractiveAvatar.tsx
+   - Returns a plain text token (not JSON)
+   - Uses POST method
+
+2. **/api/speech-token**:
+   - Returns Azure Speech Service tokens for speech-to-text functionality
+   - Uses AZURE_SPEECH_KEY and AZURE_SPEECH_REGION environment variables
+   - Returns a JSON object with token and region properties
+   - Uses GET method
 
 ### Deprecated API Routes
 The following API routes are deprecated or not used in production:
 
 - api/text-to-speech/route.ts: Placeholder route, not fully implemented.
 - api/speech-to-text/route.ts: Alternative implementation using Microsoft Cognitive Services.
-- api/get-access-token/: Not actively used in production.
 - api/process-audio/: Not actively used in production.
 - api/process-voice/: Not actively used in production.
 - api/process-conversation/: Not actively used in production.
@@ -348,3 +364,31 @@ The application uses a typed configuration system defined in app/lib/configTypes
    - Azure OpenAI for AI responses
    - Microsoft Cognitive Services Speech SDK for speech recognition
    - Azure Storage Blob for file storage 
+
+### StreamingAvatar Integration and WebRTC Troubleshooting
+
+The Pandora application integrates HeyGen's StreamingAvatar component which uses WebRTC for real-time avatar rendering:
+
+1. **Token Authentication**:
+   - The application uses two separate token systems:
+     - HeyGen API tokens from `/api/get-access-token` (required for StreamingAvatar)
+     - Azure Speech tokens from `/api/speech-token` (for speech-to-text)
+   - Using the wrong token endpoint will result in 401 Unauthorized errors
+
+2. **Common WebRTC Issues**:
+   - "Unknown DataChannel error" - Often related to network configuration or firewall issues
+   - "Stream disconnected" - Connection to HeyGen servers was lost
+   - The application includes automatic reconnection logic with a 3-second delay
+
+3. **Avatar Initialization Flow**:
+   - Token fetching: `/api/get-access-token` (POST method)
+   - API warm-up: Pre-connects to APIs to reduce latency
+   - StreamingAvatar creation: Initializes with the token
+   - createStartAvatar: Configures the avatar appearance and behavior
+   - Event listener attachment: For monitoring avatar state
+
+4. **Debugging Tips**:
+   - Check browser console for detailed error messages
+   - Verify the HEYGEN_API_KEY environment variable is correct
+   - Ensure your network allows WebRTC traffic (UDP ports, no strict firewalls)
+   - For persistent issues, try a different network or disable VPN 

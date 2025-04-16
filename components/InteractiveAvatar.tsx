@@ -28,7 +28,6 @@
  * All operations are carefully timed and logged to console for performance analysis.
  */
 import type { StartAvatarResponse } from "@heygen/streaming-avatar";
-import type { AudioWorkerOutput } from "./audioWorker";
 
 import StreamingAvatar, {
   AvatarQuality,
@@ -64,17 +63,8 @@ import InteractiveAvatarTextInput from "./InteractiveAvatarTextInput";
 
 import { AVATARS, STT_LANGUAGE_LIST } from "@/app/lib/constants";
 import { AppConfig } from "@/app/lib/configTypes";
+import { useAudioService } from "@/hooks/useAudioService";
 import Image from "next/image";
-
-// Add these imports from streamingAudio
-import {
-  createStreamingSession,
-  processAudioChunk,
-  incrementChunkSequence,
-  SessionInfo,
-  DEFAULT_STREAMING_CONFIG,
-  shouldProcessWithAI,
-} from "@/app/lib/streamingAudio";
 
 interface InteractiveAvatarProps {
   initialConfig: AppConfig;
@@ -140,9 +130,6 @@ export default function InteractiveAvatar({
   // Add these simplified state variables
   const [lastToggleTime, setLastToggleTime] = useState(0);
   const [micError, setMicError] = useState<string | null>(null);
-  const [microphoneStream, setMicrophoneStream] = useState<MediaStream | null>(
-    null
-  );
 
   // Add state to track image loading errors
   const [backgroundImgError, setBackgroundImgError] = useState(false);
@@ -165,20 +152,59 @@ export default function InteractiveAvatar({
   // Add a loading state
   const [isLoading, setIsLoading] = useState(false);
 
-  // Audio recording state
-  const [audioRecorder, setAudioRecorder] = useState<MediaRecorder | null>(
-    null
-  );
-  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
+  // Initialize AudioService via hook
+  const {
+    isRecording,
+    startRecording,
+    stopRecording,
+    isProcessing,
+    setIsProcessing,
+    currentSession,
+    audioChunks,
+    shouldProcessWithAI,
+    batchChunks,
+    prepareChunkFormData,
+    error: audioServiceError,
+  } = useAudioService({
+    config: {
+      vadEnabled: true,
+      chunkDuration: 250,
+      minChunkSize: 800,
+    },
+    onDataAvailable: (blob) => {
+      // This function will be called whenever audio data is available
+      console.log(`Audio chunk available: ${blob.size} bytes`);
 
-  // Add this near the top where other state variables are defined
-  const logoPath = useMemo(() => {
-    // Check if logo is defined in the config
-    const configLogoPath = initialConfig?.ui.logo || "/logo.png";
+      // If you need to maintain compatibility with existing code:
+      if (!audioChunksRef.current) {
+        audioChunksRef.current = [];
+      }
+      audioChunksRef.current.push(blob);
+    },
+    onSpeechStart: () => {
+      console.log("Speech detected - user started talking");
+      setIsUserTalking(true);
+    },
+    onSpeechEnd: (data) => {
+      console.log("Speech ended", data);
+      setIsUserTalking(false);
 
-    return configLogoPath;
-  }, [initialConfig]);
+      // Optionally auto-stop recording after significant speech
+      if (isRecording && data.duration > 1500) {
+        handlePushToTalkClick();
+      }
+    },
+    onAudioLevel: (level) => {
+      // Could be used to visualize audio level if needed
+    },
+    onError: (err) => {
+      console.error("Audio service error:", err);
+      setMicError(err.message);
+    },
+  });
+
+  // Track recording start time for latency measurement
+  const recordingStartTimeRef = useRef<number>(0);
 
   // Access logo config
   const logoConfig = useMemo(
@@ -192,23 +218,35 @@ export default function InteractiveAvatar({
     [initialConfig]
   );
 
+  // Add a reference for the logo path
+  const logoPath = useMemo(() => {
+    // Check if logo is defined in the config
+    const configLogoPath = initialConfig?.ui.logo || "/logo.png";
+    return configLogoPath;
+  }, [initialConfig]);
+
   // Keyboard shortcut listener for admin panel
   useEffect(() => {
     let keySequence = "";
     const keyTimeout = 2000; // 2 seconds timeout for key sequence
     let timer: NodeJS.Timeout;
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      clearTimeout(timer);
-      keySequence += e.key;
+    // Only set up effect after mounted
+    if (!isMounted) return;
 
-      // Check for the admin command sequence - "admin"
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Add the key to the sequence
+      keySequence += e.key.toLowerCase();
+
+      // Check if the admin keyword has been typed
       if (keySequence.includes("admin")) {
-        onOpen(); // Open the admin modal
-        keySequence = "";
+        // Hardcoded as "admin" since config.admin.keyword doesn't exist
+        onOpen(); // Open the admin access modal
+        keySequence = ""; // Reset the sequence
       }
 
-      // Reset sequence after timeout
+      // Reset the timer
+      clearTimeout(timer);
       timer = setTimeout(() => {
         keySequence = "";
       }, keyTimeout);
@@ -216,762 +254,472 @@ export default function InteractiveAvatar({
 
     window.addEventListener("keydown", handleKeyDown);
 
+    // Clean up
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       clearTimeout(timer);
     };
-  }, [onOpen]);
+  }, [isMounted, onOpen]);
 
-  // Add a rotation effect for the starters during loading
+  // Setup mounting state
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-
-    if (isLoadingSession && !stream) {
-      interval = setInterval(() => {
-        setCurrentStarterIndex((prevIndex) =>
-          prevIndex === conversationStarters.length - 1 ? 0 : prevIndex + 1
-        );
-      }, 3000); // Rotate every 3 seconds
-    }
-
+    setIsMounted(true);
     return () => {
-      if (interval) clearInterval(interval);
+      setIsMounted(false);
     };
-  }, [isLoadingSession, stream, conversationStarters.length]);
+  }, []);
 
+  // Clean up on unmount
   useEffect(() => {
-    if (
-      !removeBackground ||
-      !stream ||
-      !mediaStream.current ||
-      !canvasRef.current
-    )
-      return;
+    return () => {
+      console.log("Component unmounting, cleaning up...");
+      if (avatar.current) {
+        avatar.current.stopAvatar?.();
+      }
+    };
+  }, []);
 
-    const video = mediaStream.current;
+  // Effect to monitor audio service errors
+  useEffect(() => {
+    if (audioServiceError && typeof audioServiceError.message === "string") {
+      setMicError(audioServiceError.message);
+    }
+  }, [audioServiceError]);
+
+  // Rendering functions for canvas background removal
+  const hexToRgb = (hex: string): number[] => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result
+      ? [
+          parseInt(result[1], 16),
+          parseInt(result[2], 16),
+          parseInt(result[3], 16),
+        ]
+      : [0, 255, 0]; // default green if parsing fails
+  };
+
+  const renderCanvas = () => {
+    if (!canvasRef.current || !mediaStream.current) return;
+
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d", {
-      willReadFrequently: true,
-      alpha: true,
-    });
+    const video = mediaStream.current;
 
+    const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Function to convert hex color to RGB
-    const hexToRgb = (hex: string): number[] => {
-      const r = parseInt(hex.slice(1, 3), 16);
-      const g = parseInt(hex.slice(3, 5), 16);
-      const b = parseInt(hex.slice(5, 7), 16);
-      return [r, g, b];
-    };
+    // Set canvas size to match video
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
 
-    // Get target color in RGB
-    const targetColor = hexToRgb(chromaKeyColor);
+    // Draw video to canvas
+    ctx.drawImage(video, 0, 0);
 
-    const renderCanvas = () => {
-      // Ensure dimensions match the video
-      if (video.videoWidth > 0 && canvas.width !== video.videoWidth) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-      }
-
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
+    // If background removal is enabled, apply it
+    if (removeBackground) {
+      const targetColor = hexToRgb(chromaKeyColor);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const data = imageData.data;
 
       for (let i = 0; i < data.length; i += 4) {
-        const red = data[i];
-        const green = data[i + 1];
-        const blue = data[i + 2];
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
 
-        // For black background, check if pixel is close to black
-        if (
-          isCloseToTargetColor(
-            [red, green, blue],
-            targetColor,
-            chromaKeyThreshold
-          )
-        ) {
-          data[i + 3] = 0; // Set alpha channel to 0 (transparent)
+        if (isCloseToTargetColor([r, g, b], targetColor, chromaKeyThreshold)) {
+          data[i + 3] = 0; // Make pixel transparent
         }
       }
 
       ctx.putImageData(imageData, 0, 0);
+    }
 
-      return requestAnimationFrame(renderCanvas);
-    };
+    // Request next frame
+    requestAnimationFrame(renderCanvas);
+  };
 
-    const isCloseToTargetColor = (
-      color: number[],
-      target: number[],
-      threshold: number
-    ): boolean => {
-      // For green backgrounds (common in chroma key)
-      if (target[1] > 100 && target[1] > target[0] && target[1] > target[2]) {
-        // Special case for green - check if green channel is dominant
-        return (
-          color[1] > color[0] + threshold && color[1] > color[2] + threshold
-        );
-      }
+  const isCloseToTargetColor = (
+    color: number[],
+    target: number[],
+    threshold: number
+  ): boolean => {
+    // Simple distance calculation
+    const distance = Math.sqrt(
+      Math.pow(color[0] - target[0], 2) +
+        Math.pow(color[1] - target[1], 2) +
+        Math.pow(color[2] - target[2], 2)
+    );
+    return distance < threshold;
+  };
 
-      // For other colors, calculate color distance
-      const distance = Math.sqrt(
-        Math.pow(color[0] - target[0], 2) +
-          Math.pow(color[1] - target[1], 2) +
-          Math.pow(color[2] - target[2], 2)
-      );
-
-      return distance < threshold;
-    };
-
-    const animationFrameId = renderCanvas();
-
-    return () => {
-      cancelAnimationFrame(animationFrameId);
-    };
-  }, [removeBackground, stream, chromaKeyColor, chromaKeyThreshold]);
-
+  // Function to fetch access token for the avatar
   async function fetchAccessToken() {
     try {
+      const startTime = performance.now();
+      // Change to the proper HeyGen token endpoint with POST method
       const response = await fetch("/api/get-access-token", {
         method: "POST",
       });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch token: ${response.status}`);
+      }
+      // The endpoint returns the token as plain text
       const token = await response.text();
-
-      console.log("Access Token:", token); // Log the token to verify
-
-      return token;
+      console.log(
+        `Token fetch took: ${(performance.now() - startTime).toFixed(2)}ms`
+      );
+      return { token };
     } catch (error) {
       console.error("Error fetching access token:", error);
+      throw error;
     }
-
-    return "";
   }
 
-  // Set mounted state after initial render
-  useEffect(() => {
-    setIsMounted(true);
-    return () => setIsMounted(false);
+  const endSession = useCallback(() => {
+    try {
+      // Use interrupt or stopAvatar instead of stop
+      avatar.current?.stopAvatar?.();
+      setStream(undefined);
+      setData(undefined);
+    } catch (e) {
+      console.error("Error ending session:", e);
+    }
   }, []);
 
-  // Protect media stream effects
-  useEffect(() => {
-    if (!isMounted || !stream || !mediaStream.current) return;
+  let cleanup = () => {};
+
+  const initializeMicrophone = async () => {
+    if (!avatar.current) return;
 
     try {
-      mediaStream.current.srcObject = stream;
-      mediaStream.current.onloadedmetadata = () => {
-        if (!mediaStream.current) return;
-        mediaStream.current.play().catch(console.error);
-        setDebug("Playing");
-      };
-    } catch (err) {
-      console.error("Error setting up media stream:", err);
-    }
-  }, [isMounted, stream]);
+      // Try to connect original microphone (just for avatar lip sync detection, not for recording)
+      const micStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      });
 
-  // Protect microphone initialization
-  useEffect(() => {
-    if (!isMounted || !stream) return;
-
-    let cleanup = () => {};
-
-    const initializeMicrophone = async () => {
-      try {
-        console.log("Setting up direct microphone control...");
-        const micStream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: false,
-        });
-
-        if (!isMounted) {
-          micStream.getTracks().forEach((track) => track.stop());
-          return;
-        }
-
+      if (micStream && micStream.getAudioTracks().length > 0) {
         originalMicRef.current = micStream.getAudioTracks()[0];
-        originalMicRef.current.enabled = false;
         setIsOriginalMicConnected(true);
-        setMicrophoneStream(micStream);
-
-        cleanup = () => {
-          micStream.getTracks().forEach((track) => track.stop());
-        };
-
-        console.log(
-          "Direct microphone control initialized - initially disabled"
-        );
-      } catch (error) {
-        console.error("Error setting up direct microphone control:", error);
-        setMicError("Microphone access required");
+        console.log("Original microphone connected for avatar lip sync.");
       }
-    };
+    } catch (error) {
+      console.error(
+        "Failed to get original microphone for lip sync (non-critical):",
+        error
+      );
+      setIsOriginalMicConnected(false);
+    }
+  };
 
-    initializeMicrophone();
+  // Add or modify the useRef for tracking if we've handled a user gesture
+  const userInteractionRef = useRef(false);
 
-    return () => cleanup();
-  }, [isMounted, stream]);
+  // Add a function to prepare audio context
+  const prepareAudioContext = useCallback(() => {
+    if (userInteractionRef.current) return;
 
-  // Protect the startSession function
+    // This function should be called in response to a user gesture
+    // It initializes AudioContext properly to comply with browser autoplay policies
+    try {
+      // Create and resume AudioContext
+      const AudioContext =
+        window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioContext) {
+        const audioCtx = new AudioContext();
+        // Resume the audio context
+        if (audioCtx.state === "suspended") {
+          audioCtx.resume().then(() => {
+            console.log("AudioContext successfully resumed");
+          });
+        }
+        // Set flag to avoid repeated initialization
+        userInteractionRef.current = true;
+      }
+    } catch (error) {
+      console.error("Error initializing AudioContext:", error);
+    }
+  }, []);
+
+  // Modify the startSession function to add the audio context initialization
   async function startSession() {
-    if (!isMounted) return;
+    // Initialize audio context early in the function to ensure it's ready
+    prepareAudioContext();
+
+    if (isLoadingSession) {
+      console.log("Session load already in progress, ignoring duplicate call");
+      return;
+    }
 
     setIsLoadingSession(true);
+
+    // Make sure to fully clean up any existing avatar instance
+    if (avatar.current) {
+      console.log("Cleaning up previous avatar instance");
+      try {
+        // Then stop the avatar
+        avatar.current.stopAvatar?.();
+        avatar.current = null;
+      } catch (cleanupError) {
+        console.error("Error during avatar cleanup:", cleanupError);
+      }
+    }
+
+    // Set all state back to initial values
+    setStream(undefined);
+    setData(undefined);
     setError(null);
 
     try {
-      const newToken = await fetchAccessToken();
-      if (!newToken) {
-        console.error("Failed to get access token");
-        setError(
-          "Maya is out of office at the moment. Please try again in a few minutes."
+      // If we already have a token, use it (but refetch if needed)
+      const tokenStartTime = performance.now();
+      const tokenData = await fetchAccessToken();
+      console.log(
+        `Token fetch took: ${(performance.now() - tokenStartTime).toFixed(2)}ms`
+      );
+
+      // Pre-warm APIs to reduce latency for first interaction
+      const warmUpStartTime = performance.now();
+      try {
+        await warmUpAPIs();
+        console.log(
+          `API warm-up took: ${(performance.now() - warmUpStartTime).toFixed(2)}ms`
         );
-        setIsLoadingSession(false);
-        return;
+      } catch (warmUpError) {
+        console.warn("API warm-up failed (non-critical):", warmUpError);
       }
 
-      if (!isMounted) return; // Check mounted state again after async operation
+      // Debug the avatar parameters
+      console.log("Avatar parameters:", {
+        avatarId,
+        language,
+        tokenLength: tokenData.token?.length || 0,
+      });
 
+      // Initialize the avatar
+      const avatarStartTime = performance.now();
       avatar.current = new StreamingAvatar({
-        token: newToken,
+        token: tokenData.token || "", // Provide the token from fetchAccessToken
       });
 
-      // Setup event listeners
-      avatar.current.on(StreamingEvents.AVATAR_START_TALKING, (e) => {
-        console.log("Avatar started talking", e);
-      });
-      avatar.current.on(StreamingEvents.AVATAR_STOP_TALKING, (e) => {
-        console.log("Avatar stopped talking", e);
-      });
-      avatar.current.on(StreamingEvents.STREAM_DISCONNECTED, () => {
-        console.log("Stream disconnected");
-        endSession();
-      });
-      avatar.current?.on(StreamingEvents.STREAM_READY, (event) => {
-        console.log(">>>>> Stream ready:", event.detail);
-        setStream(event.detail);
+      // Load the avatar using createStartAvatar instead of start
+      // Make sure avatarId is valid
+      const validAvatarId = avatarId || "June_HR_public"; // Default to a known working avatar if empty
 
-        // IMPORTANT: We'll manually initialize our microphone control
-        // rather than letting the SDK handle it
-        setTimeout(async () => {
-          try {
-            // This gives us a clean slate for microphone control
-            if (avatar.current) {
-              await avatar.current.stopListening();
-              console.log("Temporarily stopped SDK listening");
-
-              // Custom initialization
-              setTimeout(async () => {
-                const micStream = await navigator.mediaDevices.getUserMedia({
-                  audio: true,
-                  video: false,
-                });
-                originalMicRef.current = micStream.getAudioTracks()[0];
-                originalMicRef.current.enabled = false;
-                setIsOriginalMicConnected(true);
-                setMicrophoneStream(micStream);
-                console.log("Direct mic control initialized");
-              }, 500);
-            }
-          } catch (e) {
-            console.error("Error in custom mic initialization:", e);
-          }
-        }, 300);
-      });
-      avatar.current?.on(StreamingEvents.USER_START, (event) => {
-        console.log(">>>>> User started talking:", event);
-        setIsUserTalking(true);
-      });
-      avatar.current?.on(StreamingEvents.USER_STOP, (event) => {
-        console.log(">>>>> User stopped talking:", event);
-        setIsUserTalking(false);
-      });
-
-      const res = await avatar.current.createStartAvatar({
+      const data = await avatar.current.createStartAvatar({
+        avatarName: validAvatarId,
+        language: language || "en", // Make sure language isn't empty
         quality: AvatarQuality.High,
-        avatarName: avatarId,
-        knowledgeId: knowledgeId,
         voice: {
-          rate: 0.9,
           emotion: VoiceEmotion.FRIENDLY,
         },
-        language: language,
-        disableIdleTimeout: true,
       });
 
-      setData(res);
+      console.log(
+        `Avatar initialization took: ${(performance.now() - avatarStartTime).toFixed(2)}ms`
+      );
 
-      // Remove voice chat initialization
-      setChatMode("voice_mode");
+      // Register event listeners for StreamingAvatar
+      if (avatar.current) {
+        console.log("Setting up avatar event listeners");
 
-      // IMPORTANT: Wait for the avatar to fully initialize before setting up mic
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+        avatar.current.on(StreamingEvents.AVATAR_START_TALKING, () => {
+          console.log("Avatar started talking");
+        });
 
-      // Explicitly disable microphone on startup
-      try {
-        console.log("Explicitly disabling microphone on startup");
-        if (avatar.current) {
-          await avatar.current.stopListening();
-        }
-        console.log("Initial microphone state: disabled");
-      } catch (initError) {
-        console.error("Error during initial microphone setup:", initError);
+        avatar.current.on(StreamingEvents.AVATAR_STOP_TALKING, () => {
+          console.log("Avatar stopped talking");
+        });
+
+        // Add stream ready event
+        avatar.current.on(StreamingEvents.STREAM_READY, (e) => {
+          console.log("Stream ready:", e);
+        });
+
+        // Better error handling for stream disconnection
+        avatar.current.on(StreamingEvents.STREAM_DISCONNECTED, (e: any) => {
+          console.error("Stream disconnected:", e);
+
+          // Extract error message if available
+          const errorMsg =
+            e?.detail?.message ||
+            (typeof e?.detail === "string" ? e.detail : "Connection lost") ||
+            e?.message ||
+            "WebRTC connection error";
+
+          setError(`Avatar connection error: ${errorMsg}`);
+
+          // Limit reconnection attempts - disable automatic reconnection
+          // This prevents overwhelming the API with repeat requests
+          console.log(
+            "Auto-reconnect disabled - please try manually refreshing"
+          );
+        });
       }
+
+      // Attach canvas setup for chromakey if enabled
+      if (removeBackground) {
+        // Start rendering to canvas for background removal
+        requestAnimationFrame(renderCanvas);
+      }
+
+      setData(data);
+      // Get the stream from the event or data depending on API version
+      setStream(data.stream);
+
+      await initializeMicrophone();
+
+      // Track successful avatar setup for metrics
+      const totalTime = performance.now() - tokenStartTime;
+      console.log(`Total avatar setup time: ${totalTime.toFixed(2)}ms`);
     } catch (error) {
-      console.error("Error starting session:", error);
+      console.error("Error starting avatar session:", error);
       setError(
-        "Maya is out of office at the moment. Please try again in a few minutes."
+        `Failed to start avatar: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       );
     } finally {
-      if (isMounted) {
-        setIsLoadingSession(false);
-      }
+      setIsLoadingSession(false);
     }
   }
 
   async function handleSpeak() {
-    setIsLoadingRepeat(true);
-    if (!avatar.current) {
-      setDebug("Avatar API not initialized");
-
-      return;
+    if (!avatar.current) return;
+    try {
+      await avatar.current.speak({ text });
+    } catch (e) {
+      console.error("Error in handleSpeak:", e);
     }
-    await avatar.current?.speak({ text });
-    setIsLoadingRepeat(false);
   }
 
   async function handleInterrupt() {
-    if (!avatar.current) {
-      setDebug("Avatar API not initialized");
-
-      return;
+    if (!avatar.current) return;
+    try {
+      await avatar.current.interrupt();
+    } catch (e) {
+      console.error("Error in handleInterrupt:", e);
     }
-    await avatar.current.interrupt().catch((e) => {
-      setDebug(e.message);
-    });
   }
 
-  const endSession = useCallback(async () => {
+  // Handle transcription result and speak with avatar
+  async function handleTranscriptionResult(
+    transcribedText: string,
+    aiResponse: string
+  ) {
     try {
-      // Exit fullscreen if active
-      if (isFullscreen) {
-        if (document.exitFullscreen) {
-          await document.exitFullscreen();
-        } else if ((document as any).webkitExitFullscreen) {
-          await (document as any).webkitExitFullscreen();
-        } else if ((document as any).mozCancelFullScreen) {
-          await (document as any).mozCancelFullScreen();
-        } else if ((document as any).msExitFullscreen) {
-          await (document as any).msExitFullscreen();
-        }
-        setIsFullscreen(false);
+      console.log("Handling transcription result:", {
+        transcription: transcribedText,
+        aiResponse,
+      });
+
+      if (!transcribedText || !aiResponse) {
+        console.log("Empty transcription or AI response, nothing to process");
+        setIsProcessing(false);
+        return;
       }
 
-      // Use the correct method to end the session
+      // Now have the avatar speak the response
+      const avatarStartTime = performance.now();
+
       if (avatar.current) {
-        await avatar.current.stopAvatar();
-        avatar.current = null;
+        console.log(`Avatar speaking: "${aiResponse}"`);
+        try {
+          await avatar.current.speak({ text: aiResponse });
+          console.log(
+            `Avatar speak call took: ${(performance.now() - avatarStartTime).toFixed(2)}ms`
+          );
+        } catch (error) {
+          console.error("Error having avatar speak:", error);
+        }
+      } else {
+        console.warn("Avatar not available for speaking");
       }
-      setStream(undefined);
-      setData(undefined);
-      setDebug(undefined);
-      setIsUserTalking(false);
-      setIsPushingToTalk(false);
 
-      // Reset any other state
-      setError(null);
-    } catch (err) {
-      console.error("Error ending session:", err);
-      setError("Failed to end session properly. Please refresh the page.");
+      // Clear processing state
+      setIsProcessing(false);
+    } catch (error) {
+      console.error("Error handling transcription result:", error);
+      setIsProcessing(false);
     }
-  }, [isFullscreen]);
-
-  const handleChangeChatMode = useMemoizedFn(async (v) => {
-    if (v === chatMode) {
-      return;
-    }
-    if (v === "text_mode") {
-      avatar.current?.closeVoiceChat();
-    } else {
-      await avatar.current?.startVoiceChat();
-    }
-    setChatMode(v);
-  });
+  }
 
   const toggleFullscreen = () => {
-    if (!isFullscreen) {
+    if (!document.fullscreenElement) {
+      // Enter fullscreen
       if (videoContainerRef.current?.requestFullscreen) {
         videoContainerRef.current.requestFullscreen().catch((err) => {
-          setDebug(`Error attempting to enable fullscreen: ${err.message}`);
+          console.error("Error attempting to enable fullscreen:", err);
         });
       }
     } else {
+      // Exit fullscreen
       if (document.exitFullscreen) {
         document.exitFullscreen().catch((err) => {
-          setDebug(`Error attempting to exit fullscreen: ${err.message}`);
+          console.error("Error attempting to exit fullscreen:", err);
         });
       }
     }
   };
 
-  // Clean up any microphone resources when component unmounts
+  // Initialize the avatar mic state when the mode changes
   useEffect(() => {
-    return () => {
-      // Make sure microphone is released when component unmounts
-      if (microphoneStream) {
-        microphoneStream.getTracks().forEach((track) => {
-          track.stop();
-        });
-      }
-    };
-  }, [microphoneStream]);
-
-  // Ensure the avatar is muted on initial load
-  useEffect(() => {
-    // Mute the avatar immediately after initialization
     const initializeAvatarMicState = async () => {
-      if (avatar.current) {
-        try {
-          console.log("Initializing avatar mic state to muted");
-          // Small delay to ensure avatar is ready
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          await avatar.current.stopListening();
-          console.log("Avatar initially muted");
-        } catch (error) {
-          console.error("Error muting on initialization:", error);
+      if (!avatar.current || !stream) return;
+
+      console.log(`Chat mode changed to: ${chatMode}`);
+
+      try {
+        if (chatMode === "voice_mode") {
+          // In voice mode, we want the avatar's microphone off by default
+          // so it doesn't listen to the user all the time
+          avatar.current.stopListening();
+          console.log("Avatar microphone disabled in voice mode");
+        } else if (chatMode === "text_mode") {
+          // In text mode, we want the avatar to listen to itself
+          // (this may need to be adjusted depending on your needs)
+          avatar.current.stopListening();
+          console.log("Avatar microphone disabled in text mode");
+        } else {
+          avatar.current.stopListening();
+          console.log("Avatar microphone disabled for unknown mode");
         }
+      } catch (error) {
+        console.error("Error initializing avatar mic state:", error);
       }
     };
 
-    initializeAvatarMicState();
-  }, []);
+    if (stream && isMounted) {
+      initializeAvatarMicState();
+    }
+  }, [chatMode, stream, isMounted]);
 
-  // Add to the existing state variables
-  const audioWorkerRef = useRef<Worker | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const processingMetrics = useRef<Record<string, number>>({});
-  const recordingStartTimeRef = useRef<number>(0);
-
-  // Add this helper function for performance logging
-  const logPerformance = useCallback(
-    (step: string, startTime: number, endTime: number) => {
-      const duration = endTime - startTime;
-      processingMetrics.current[step] = duration;
-      console.log(`Performance Metric - ${step}: ${duration.toFixed(2)}ms`);
-      return duration;
-    },
-    []
-  );
-
-  // After the other useEffect hooks, add a new one for WebWorker initialization
-  useEffect(() => {
-    if (!isMounted) return;
-
-    // Create the audio processing worker
-    let audioWorker: Worker | null = null;
-
+  // Function to warm up APIs for faster first response
+  const warmUpAPIs = async () => {
     try {
-      // Create worker with a dynamic import
-      audioWorker = new Worker(new URL("./audioWorker.ts", import.meta.url), {
-        type: "module",
+      const warmupStartTime = performance.now();
+
+      // Warm up the transcribe API
+      await fetch("/api/check-azure", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
       });
-      audioWorkerRef.current = audioWorker;
-      console.log("Audio processing worker initialized");
+
+      console.log(
+        `API warm-up took: ${(performance.now() - warmupStartTime).toFixed(2)}ms`
+      );
     } catch (error) {
-      console.error("Error initializing audio worker:", error);
+      console.warn("API warm-up error (non-critical):", error);
     }
+  };
 
-    // Setup API connection pre-warming
-    const warmUpAPIs = async () => {
-      console.log("Pre-emptively warming up API connections...");
-
-      // Pre-connect to both APIs to establish TCP connections
-      await Promise.all([
-        // Use the transcribe-chunk API endpoint like in StreamingVoiceTest
-        fetch("/api/transcribe-chunk", {
-          method: "HEAD",
-          headers: { Connection: "keep-alive" },
-        }).catch(() => {}),
-
-        // Also warm up the direct transcribe API
-        fetch("/api/transcribe", {
-          method: "HEAD",
-          headers: { Connection: "keep-alive" },
-        }).catch(() => {}),
-
-        fetch("/api/chat", {
-          method: "HEAD",
-          headers: { Connection: "keep-alive" },
-        }).catch(() => {}),
-      ]);
-
-      console.log("API connections pre-established");
-    };
-
-    // Pre-warm connections immediately
-    warmUpAPIs();
-
-    // Set up recurring warm-up every 2 minutes
-    const keepAliveInterval = setInterval(warmUpAPIs, 120000);
-
-    // Clean up
-    return () => {
-      if (audioWorker) {
-        audioWorker.terminate();
-        console.log("Audio processing worker terminated");
-      }
-      clearInterval(keepAliveInterval);
-    };
-  }, [isMounted]);
-
-  // Add session state
-  const [sessionInfo, setSessionInfo] = useState<SessionInfo>(
-    createStreamingSession
-  );
-
-  // Update the getSupportedMimeType function to match StreamingVoiceTest
-  const getSupportedMimeType = useCallback(() => {
-    // Optimal formats in order of preference - MP3 is optimal for Azure processing
-    const mimeTypes = [
-      "audio/mp3", // Direct MP3 (not widely supported but best if available)
-      "audio/mpeg", // MP3 alternative syntax
-      "audio/webm;codecs=opus", // Good compression, widely supported
-      "audio/webm", // Fallback webm without codec specification
-      "audio/ogg;codecs=opus", // Good compression, decent support
-      "audio/wav", // Widely supported but inefficient
-      "audio/ogg", // Fallback ogg without codec
-    ];
-
-    // Find the first supported MIME type
-    for (const mimeType of mimeTypes) {
-      if (MediaRecorder.isTypeSupported(mimeType)) {
-        console.log(`Using supported MIME type: ${mimeType}`);
-        return mimeType;
-      }
-    }
-
-    // Fallback to default if none are supported
-    console.warn(
-      "None of the preferred MIME types are supported, using default"
-    );
-    return "audio/webm";
-  }, []);
-
-  // Add a function to handle transcription results
-  const handleTranscriptionResult = useCallback(
-    async (transcribedText: string, aiResponse: string) => {
-      console.log(`Transcription result: "${transcribedText}"`);
-
-      // Update the text state
-      setText(transcribedText);
-
-      // Have avatar speak the response
-      console.log("Requesting avatar to speak response...");
-      const speakStart = performance.now();
-
-      if (avatar.current) {
-        try {
-          await avatar.current.speak({
-            text: aiResponse,
-            taskType: TaskType.REPEAT,
-            taskMode: TaskMode.SYNC,
-          });
-          console.log("Avatar speech completed");
-        } catch (speakError) {
-          console.error("Error during avatar speech:", speakError);
-        }
-      } else {
-        console.error("Avatar reference not available");
-      }
-
-      const speakEnd = performance.now();
-      console.log(
-        `Avatar speaking took: ${(speakEnd - speakStart).toFixed(2)}ms`
-      );
-
-      // Log total interaction time after speaking
-      const totalTime = performance.now() - recordingStartTimeRef.current;
-      console.log(`Total interaction time: ${totalTime.toFixed(2)}ms`);
-    },
-    []
-  );
-
-  // Update the initializeRecorder function to use the handleTranscriptionResult
-  function initializeRecorder(stream: MediaStream) {
-    // Set up recorder with optimized settings for low latency
-    const options = {
-      mimeType: getSupportedMimeType(),
-      audioBitsPerSecond: DEFAULT_STREAMING_CONFIG.audioBitsPerSecond,
-    };
-
-    // Create new session when recording starts
-    setSessionInfo(createStreamingSession());
-
-    // Clear existing chunks
-    audioChunksRef.current = [];
-    let recorder: MediaRecorder;
-
-    try {
-      recorder = new MediaRecorder(stream, options);
-    } catch (e) {
-      console.log(
-        "MediaRecorder not supported with these options, falling back to default"
-      );
-      recorder = new MediaRecorder(stream);
-    }
-
-    // Flag to coordinate between onstop and ondataavailable
-    let isStopping = false;
-    let finalChunkReceived = false;
-    let pendingProcessing = false;
-
-    // Enhanced data handling with chunk size logging
-    recorder.ondataavailable = async (e) => {
-      console.log(
-        `MediaRecorder ondataavailable event triggered, data size: ${e.data.size} bytes`
-      );
-      if (e.data && e.data.size > 0) {
-        // Store the chunk in our ref
-        if (!audioChunksRef.current) {
-          audioChunksRef.current = [];
-        }
-        audioChunksRef.current.push(e.data);
-
-        const totalChunks = audioChunksRef.current.length;
-        console.log(
-          `Audio chunk added to buffer, total chunks: ${totalChunks}`
-        );
-
-        // Only process if this is an interim chunk (not during stopping)
-        // and it's large enough to likely contain speech
-        if (
-          !isStopping &&
-          e.data.size >= DEFAULT_STREAMING_CONFIG.minChunkSize * 1.5
-        ) {
-          try {
-            const chunkStart = performance.now();
-
-            // Process the chunk with the latest session info
-            const chunkResult = await processAudioChunk(
-              e.data,
-              sessionInfo,
-              false // Not the last chunk
-            );
-
-            const chunkEnd = performance.now();
-            console.log(
-              `Process interim chunk took: ${(chunkEnd - chunkStart).toFixed(2)}ms`
-            );
-
-            // Only update for meaningful results
-            if (chunkResult?.error) {
-              console.warn(
-                "Error processing interim chunk:",
-                chunkResult.error
-              );
-              // Don't show interim errors to avoid UI noise
-            } else if (chunkResult?.text) {
-              console.log("Interim transcription:", chunkResult.text);
-              // Update session for next chunk
-              setSessionInfo(incrementChunkSequence(sessionInfo));
-            }
-          } catch (error) {
-            console.error("Error in chunk processing:", error);
-          }
-        }
-        // If we're stopping and just received a chunk, do final processing
-        else if (isStopping && !pendingProcessing) {
-          finalChunkReceived = true;
-          pendingProcessing = true;
-
-          console.log("Final chunk received, starting processing");
-          try {
-            // Process the recorded audio when recording stops
-            const result = await processRecordedAudio();
-
-            // Handle the result
-            if (result) {
-              await handleTranscriptionResult(
-                result.transcribedText,
-                result.aiResponse
-              );
-            }
-          } catch (error) {
-            console.error(
-              "Error processing audio in ondataavailable handler:",
-              error
-            );
-          } finally {
-            pendingProcessing = false;
-          }
-        }
-      }
-    };
-
-    // Record for 250ms chunks for more responsive experience
-    recorder.start(DEFAULT_STREAMING_CONFIG.chunkDuration);
-    console.log(
-      `MediaRecorder started with ${DEFAULT_STREAMING_CONFIG.chunkDuration}ms timeslice`
-    );
-
-    recorder.onstop = async () => {
-      console.log(`MediaRecorder stopped, waiting for final chunks...`);
-      isStopping = true;
-
-      // If we already have all chunks (finalChunkReceived was set in ondataavailable)
-      // then we've already processed the audio and don't need to do anything
-      if (finalChunkReceived) {
-        console.log(
-          "Final processing already completed in ondataavailable handler"
-        );
-        return;
-      }
-
-      // Set a timeout to ensure processing happens even if no more ondataavailable events fire
-      setTimeout(async () => {
-        if (!pendingProcessing) {
-          console.log("Timeout reached, processing existing chunks");
-          pendingProcessing = true;
-
-          if (!audioChunksRef.current || audioChunksRef.current.length === 0) {
-            console.log("No audio chunks to process after recording stopped");
-            setIsProcessing(false);
-            return;
-          }
-
-          try {
-            // Process the recorded audio when recording stops
-            const result = await processRecordedAudio();
-
-            // Handle the result
-            if (result) {
-              await handleTranscriptionResult(
-                result.transcribedText,
-                result.aiResponse
-              );
-            }
-          } catch (error) {
-            console.error(
-              "Error processing audio in onstop timeout handler:",
-              error
-            );
-          } finally {
-            pendingProcessing = false;
-          }
-        }
-      }, 300); // 300ms timeout should be enough for final chunks to arrive
-    };
-
-    return recorder;
-  }
-
-  // Optimize the processRecordedAudio function to focus on the streaming approach
+  // Process recorded audio through transcription and chat APIs
   async function processRecordedAudio(): Promise<{
     transcribedText: string;
     aiResponse: string;
   } | null> {
-    if (!audioChunksRef.current || audioChunksRef.current.length === 0) {
+    const chunks =
+      audioChunks.length > 0 ? audioChunks : audioChunksRef.current;
+
+    if (!chunks || chunks.length === 0) {
       console.log("No audio chunks to process");
       return null;
     }
@@ -980,92 +728,76 @@ export default function InteractiveAvatar({
       setIsProcessing(true);
       const startTime = performance.now();
 
-      // Log original chunks for debugging
+      // Log audio chunks for debugging
       console.log("Audio chunks collected:", {
-        count: audioChunksRef.current.length,
-        sizes: audioChunksRef.current.map((chunk) => chunk.size),
-        types: audioChunksRef.current.map((chunk) => chunk.type),
-        totalSize: audioChunksRef.current.reduce(
-          (sum, chunk) => sum + chunk.size,
+        count: chunks.length,
+        totalSize: chunks.reduce(
+          (sum: number, chunk: Blob) => sum + chunk.size,
           0
         ),
       });
 
-      // Create combined blob from all chunks using the first chunk's type
-      const blobStartTime = performance.now();
-      const combinedBlob = new Blob(audioChunksRef.current, {
-        type: audioChunksRef.current[0]?.type || "audio/webm",
+      // Create combined blob from all chunks
+      const combinedBlob = batchChunks(chunks);
+      console.log(
+        `Combined audio blob created: ${(combinedBlob.size / 1024).toFixed(2)}KB`
+      );
+
+      // Prepare the form data for the transcription request
+      const formData = await prepareChunkFormData(combinedBlob, true);
+
+      // Send the audio for transcription
+      const transcribeStartTime = performance.now();
+      const transcribeResponse = await fetch("/api/transcribe", {
+        method: "POST",
+        body: formData,
       });
 
-      console.log(
-        `Combined audio blob created: ${(combinedBlob.size / 1024).toFixed(2)}KB, combining took ${(performance.now() - blobStartTime).toFixed(2)}ms`
-      );
-
-      // Process the final chunk using processAudioChunk from streamingAudio
-      // This is our primary approach for all audio processing
-      const processingStart = performance.now();
-      const finalChunkResult = await processAudioChunk(
-        combinedBlob,
-        sessionInfo,
-        true // This is the final chunk
-      );
-
-      console.log(
-        `Audio processing through streaming API took: ${(performance.now() - processingStart).toFixed(2)}ms`
-      );
-
-      console.log("Final chunk processing result:", {
-        hasText: !!finalChunkResult?.text,
-        hasError: !!finalChunkResult?.error,
-        metrics: finalChunkResult?.metrics,
-      });
-
-      // If we have an error from the streaming API, log and rethrow
-      if (finalChunkResult?.error) {
-        throw new Error(`Transcription error: ${finalChunkResult.error}`);
+      if (!transcribeResponse.ok) {
+        throw new Error(`Transcription error: ${transcribeResponse.status}`);
       }
 
-      // If we got text back, use it
-      if (finalChunkResult?.text) {
-        const transcribedText = finalChunkResult.text;
-        console.log("Transcribed text:", transcribedText);
+      const transcribeResult = await transcribeResponse.json();
+      console.log(
+        `Transcription API took: ${(performance.now() - transcribeStartTime).toFixed(2)}ms`
+      );
 
-        if (!transcribedText || transcribedText.trim() === "") {
-          console.log("No transcription received");
-          return null;
-        }
-
-        // Then, get the AI response
-        const aiResponse = await fetchChatResponse(transcribedText);
-        console.log("AI response:", aiResponse);
-
-        const totalTime = performance.now() - startTime;
-        console.log(`Total processing time: ${totalTime.toFixed(2)}ms`);
-
-        return { transcribedText, aiResponse };
+      // Check if we have a valid transcription
+      if (!transcribeResult.text || transcribeResult.text.trim() === "") {
+        console.log("No transcription received");
+        return null;
       }
 
-      // If we got here, something went wrong but no error was thrown
-      console.error(
-        "No transcription text returned, but no error was reported"
-      );
-      return null;
+      const transcribedText = transcribeResult.text.trim();
+      console.log("Transcribed text:", transcribedText);
+
+      // Get the AI response
+      const aiResponse = await fetchChatResponse(transcribedText);
+      console.log("AI response:", aiResponse);
+
+      const totalTime = performance.now() - startTime;
+      console.log(`Total processing time: ${totalTime.toFixed(2)}ms`);
+
+      return { transcribedText, aiResponse };
     } catch (error) {
       console.error("Error processing audio:", error);
+      setError(
+        `Error processing audio: ${error instanceof Error ? error.message : String(error)}`
+      );
       return null;
     } finally {
       setIsProcessing(false);
     }
   }
 
-  // Update the fetchChatResponse function to better handle errors and include metrics
+  // Fetch a response from the chat API
   async function fetchChatResponse(message: string): Promise<string> {
     const chatStartTime = performance.now();
-    console.log("Calling chat API with transcription:", message);
 
     try {
-      // Call the chat API with proper error handling
-      const response = await fetch("/api/chat", {
+      // Call the chat API
+      console.log("Calling chat API with message:", message);
+      const chatResponse = await fetch("/api/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1082,209 +814,94 @@ export default function InteractiveAvatar({
             },
           ],
         }),
-        // Add timeout signal for better error handling
-        signal: AbortSignal.timeout(10000), // 10-second timeout
       });
 
-      if (!response.ok) {
-        // Handle specific error cases
-        if (response.status === 429) {
-          throw new Error("Rate limit exceeded. Please try again in a moment.");
-        } else if (response.status === 500) {
-          throw new Error(
-            "Server error processing your request. Please try again."
-          );
-        } else {
-          throw new Error(`Chat API failed: ${response.status}`);
-        }
+      if (!chatResponse.ok) {
+        throw new Error(`Chat API error: ${chatResponse.status}`);
       }
 
-      const data = await response.json();
+      const data = await chatResponse.json();
+      console.log("Chat API response:", data);
 
-      // Log metrics if available
-      if (data.metrics) {
-        console.log("Chat API metrics:", data.metrics);
-        // Store metrics in the processingMetrics ref (similar to StreamingVoiceTest)
-        Object.entries(data.metrics).forEach(([key, value]) => {
-          if (typeof value === "number") {
-            processingMetrics.current[`chat_${key}`] = value;
-          }
-        });
-      }
-
-      const chatEndTime = performance.now();
-      const totalChatTime = chatEndTime - chatStartTime;
-      console.log(`Total chat API time: ${totalChatTime.toFixed(2)}ms`);
-      processingMetrics.current["chat_total_time"] = totalChatTime;
-
-      // Extract response depending on the format returned
-      return (
-        data.response ||
+      // Extract the message from the response
+      const responseMessage =
+        data.message ||
         (data.choices && data.choices[0]?.message?.content) ||
-        "I'm sorry, I couldn't process that request."
-      );
+        "I'm sorry, I couldn't understand that.";
+
+      const totalTime = performance.now() - chatStartTime;
+      console.log(`Chat API total time: ${totalTime.toFixed(2)}ms`);
+
+      return responseMessage;
     } catch (error) {
-      console.error("Error fetching chat response:", error);
-
-      // More informative error messages
-      if (error instanceof TypeError && error.message.includes("fetch")) {
-        return "Sorry, I'm having trouble connecting to my knowledge base. Please check your internet connection.";
-      } else if (error instanceof DOMException && error.name === "AbortError") {
-        return "Sorry, the request took too long to process. Please try a shorter message.";
-      }
-
-      return "Sorry, I encountered an error processing your request.";
+      console.error("Error getting chat response:", error);
+      return "I'm sorry, I encountered an error processing your request.";
     }
   }
 
-  // Update the handlePushToTalkClick function to include performance metrics
+  // Modify the handlePushToTalkClick function to also ensure AudioContext is ready
   const handlePushToTalkClick = async () => {
+    // Initialize AudioContext on user interaction
+    prepareAudioContext();
+
     // Record performance metrics
     const clickTime = performance.now();
     console.log(`Push-to-talk button clicked at ${new Date().toISOString()}`);
 
     if (!isPushingToTalk) {
+      // Start recording
       const startButtonTime = performance.now();
-      await startPushToTalk();
-      console.log(
-        `Start push-to-talk took: ${(performance.now() - startButtonTime).toFixed(2)}ms`
-      );
+      setMicError(null); // Clear any previous errors
+      setIsPushingToTalk(true);
+
+      try {
+        // Record the start time for latency calculation
+        recordingStartTimeRef.current = performance.now();
+
+        // Use the useAudioService hook to start recording
+        await startRecording();
+
+        console.log(
+          `Start recording took: ${(performance.now() - startButtonTime).toFixed(2)}ms`
+        );
+      } catch (error) {
+        console.error("Error starting recording:", error);
+        setMicError("Failed to access microphone");
+        setIsPushingToTalk(false);
+      }
     } else {
+      // Stop recording
       const stopButtonTime = performance.now();
-      await stopPushToTalk();
-      console.log(
-        `Stop push-to-talk took: ${(performance.now() - stopButtonTime).toFixed(2)}ms`
-      );
+      setIsPushingToTalk(false);
+
+      try {
+        // Stop recording and get the audio blob
+        const audioBlob = await stopRecording();
+
+        console.log(
+          `Stop recording took: ${(performance.now() - stopButtonTime).toFixed(2)}ms`
+        );
+
+        // Process the recorded audio
+        const result = await processRecordedAudio();
+
+        // Handle the transcription result
+        if (result) {
+          await handleTranscriptionResult(
+            result.transcribedText,
+            result.aiResponse
+          );
+        }
+      } catch (error) {
+        console.error("Error stopping recording:", error);
+        setMicError("Error processing your voice");
+      }
     }
 
     console.log(
       `Total button interaction took: ${(performance.now() - clickTime).toFixed(2)}ms`
     );
   };
-
-  // Update the startPushToTalk function to use the optimized audio stream
-  async function startPushToTalk() {
-    if (!isMounted) return;
-
-    try {
-      const startTime = performance.now();
-      // Start recording
-      console.log("Starting recording...");
-      setMicError(null); // Clear any previous errors
-
-      // Use the optimized audio stream settings
-      const stream = await getAudioStream();
-      const mediaTime = performance.now();
-      console.log(`Media access took: ${(mediaTime - startTime).toFixed(2)}ms`);
-
-      // Initialize recorder - this now internally starts the recorder
-      const recorder = initializeRecorder(stream);
-      const recorderTime = performance.now();
-      console.log(
-        `Recorder initialization took: ${(recorderTime - mediaTime).toFixed(2)}ms`
-      );
-
-      // Update state
-      setAudioRecorder(recorder);
-      setIsPushingToTalk(true);
-
-      // Store start time for latency calculation
-      recordingStartTimeRef.current = performance.now();
-      console.log(
-        `Total start recording took: ${(performance.now() - startTime).toFixed(2)}ms`
-      );
-    } catch (error) {
-      console.error("Error starting push-to-talk:", error);
-      setMicError("Failed to access microphone");
-    }
-  }
-
-  // Update stopPushToTalk function to work with the new flow
-  async function stopPushToTalk() {
-    if (!isMounted) return;
-
-    try {
-      const stopTime = performance.now();
-      console.log("Stopping recording...");
-
-      // Calculate recording duration
-      const recordingDuration = stopTime - recordingStartTimeRef.current;
-      console.log(`Recording duration: ${recordingDuration.toFixed(2)}ms`);
-
-      // Update UI state first
-      setIsPushingToTalk(false);
-      setIsProcessing(true);
-
-      // Stop the recorder
-      // This will trigger the onstop event which coordinates with ondataavailable
-      // to ensure we only process the audio once
-      if (audioRecorder && audioRecorder.state !== "inactive") {
-        console.log("Stopping MediaRecorder...");
-        audioRecorder.stop();
-        const stopRecorderTime = performance.now();
-        console.log(
-          `Stop recorder took: ${(stopRecorderTime - stopTime).toFixed(2)}ms`
-        );
-      } else {
-        console.log("MediaRecorder already inactive or not available");
-        setIsProcessing(false);
-      }
-
-      // Note: We don't call processRecordedAudio() here anymore
-      // That's now handled by the coordination between onstop and ondataavailable events
-
-      // Clean up recorder state - this should happen after processing is complete
-      // but we can't await the processing here because it's happening asynchronously
-      // after the final chunk is received
-      setTimeout(() => {
-        if (audioRecorder) {
-          const tracks = audioRecorder.stream.getTracks();
-          tracks.forEach((track) => track.stop());
-          console.log("Audio recording tracks cleaned up");
-        }
-        // Only clear the recorder reference after processing is done
-        if (!isProcessing) {
-          setAudioRecorder(null);
-        }
-      }, 1000); // Give enough time for processing to complete
-    } catch (error) {
-      console.error("Error in stopPushToTalk:", error);
-      setMicError("Error processing your voice");
-      setIsProcessing(false);
-    }
-  }
-
-  // Update the getAudioStream function to optimize audio settings for speech recognition
-  const getAudioStream = useCallback(async () => {
-    const startTime = performance.now();
-    try {
-      // Request optimal audio settings for speech recognition
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1, // Mono audio (better for speech recognition)
-          sampleRate: 16000, // 16kHz sample rate (optimal for Whisper)
-          sampleSize: 16, // 16-bit samples (good quality)
-          echoCancellation: true, // Reduce echo
-          noiseSuppression: true, // Reduce background noise
-          autoGainControl: true, // Help normalize audio levels
-        },
-      });
-      const endTime = performance.now();
-      console.log(
-        `Get Audio Stream took ${(endTime - startTime).toFixed(2)}ms`
-      );
-      return stream;
-    } catch (error) {
-      console.error("Error accessing microphone:", error);
-      const endTime = performance.now();
-      console.log(
-        `Get Audio Stream (Failed) took ${(endTime - startTime).toFixed(2)}ms`
-      );
-      throw new Error(
-        "Failed to access microphone. Please ensure microphone permissions are granted."
-      );
-    }
-  }, []);
 
   const handleAdminAccess = () => {
     if (adminAccessCode === adminCode) {
@@ -1316,7 +933,7 @@ export default function InteractiveAvatar({
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
       endSession();
     };
-  }, []);
+  }, [endSession]);
 
   useEffect(() => {
     if (stream && chatMode === "voice_mode") {
@@ -1352,6 +969,32 @@ export default function InteractiveAvatar({
       }
     };
   }, [stream, chatMode]);
+
+  // Add this after recordingStartTimeRef
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  // Replace the individual useEffect hooks with a more organized approach
+  // Add this useEffect for session initialization to prevent duplicate calls
+  useEffect(() => {
+    // Only initialize if mounted, not already loading, no stream, AND no error
+    if (isMounted && !isLoadingSession && !stream && !error) {
+      console.log("Auto-initializing avatar session");
+      startSession();
+    }
+
+    // On unmount, clean up resources
+    return () => {
+      if (avatar.current) {
+        console.log("Component unmounting, cleaning up avatar resources");
+        try {
+          avatar.current.stopAvatar?.();
+          avatar.current = null;
+        } catch (e) {
+          console.error("Error cleaning up avatar on unmount:", e);
+        }
+      }
+    };
+  }, [isMounted, isLoadingSession, stream, error]);
 
   // Don't render anything until mounted
   if (!isMounted) {
@@ -1862,7 +1505,7 @@ export default function InteractiveAvatar({
                 aria-label="Chat mode"
                 selectedKey={chatMode}
                 onSelectionChange={(v) => {
-                  handleChangeChatMode(v);
+                  setChatMode(v as string);
                 }}
               >
                 <Tab key="text_mode" title="Text mode" />
