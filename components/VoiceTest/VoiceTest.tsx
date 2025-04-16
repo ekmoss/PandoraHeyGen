@@ -2,6 +2,10 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { Button, Card, CardBody } from "@nextui-org/react";
+import {
+  processUserMessage,
+  parseJsonResponse,
+} from "@/services/openai-service";
 
 interface VoiceTestProps {
   onTranscriptionComplete?: (text: string) => void;
@@ -86,33 +90,55 @@ export default function VoiceTest({ onTranscriptionComplete }: VoiceTestProps) {
     try {
       setIsProcessing(true);
 
+      // Log service preparation time
+      const serviceStartTime = performance.now();
+      logPerformance("Service Preparation", startTime, serviceStartTime);
+
       const chatStartTime = performance.now();
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ message: text }),
-      });
+      const response = await processUserMessage(text, { stream: false });
       const chatEndTime = performance.now();
-      logPerformance("OpenAI Chat API Call", chatStartTime, chatEndTime);
+      logPerformance("OpenAI API Call", chatStartTime, chatEndTime);
 
       if (!response.ok) {
         throw new Error(`Chat API error: ${response.statusText}`);
       }
 
       const dataStartTime = performance.now();
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
       const dataEndTime = performance.now();
-      logPerformance("Parse Chat Response", dataStartTime, dataEndTime);
+      logPerformance("Parse Response", dataStartTime, dataEndTime);
 
       // Store API metrics if available
       if (data.metrics) {
         setChatMetrics(data.metrics);
         console.log("Chat API metrics:", data.metrics);
+
+        // Add server-side metrics to client metrics
+        if (data.metrics.openAIApiCall) {
+          logPerformance(
+            "Server: OpenAI API Call",
+            0, // Relative time
+            data.metrics.openAIApiCall
+          );
+        }
+
+        if (data.metrics.parseRequest) {
+          logPerformance("Server: Parse Request", 0, data.metrics.parseRequest);
+        }
+
+        if (data.metrics.parseResponse) {
+          logPerformance(
+            "Server: Parse Response",
+            0,
+            data.metrics.parseResponse
+          );
+        }
       }
 
       setResponse(data.message || "No response received");
+
+      // Log total processing time
+      logPerformance("Total API Roundtrip", startTime, dataEndTime);
     } catch (error) {
       console.error("Error processing chat:", error);
       setError(
@@ -120,7 +146,7 @@ export default function VoiceTest({ onTranscriptionComplete }: VoiceTestProps) {
       );
     } finally {
       const endTime = performance.now();
-      logPerformance("Total Chat Processing", startTime, endTime);
+      logPerformance("End-to-End Processing", startTime, endTime);
       setIsProcessing(false);
     }
   };
@@ -297,7 +323,10 @@ export default function VoiceTest({ onTranscriptionComplete }: VoiceTestProps) {
   const renderApiMetricsTable = (title: string, metrics: ApiMetrics | null) => {
     if (!metrics) return null;
 
-    const total = metrics.total || 0;
+    // Calculate total time for percentage calculations
+    const total =
+      metrics.total ||
+      Object.values(metrics).reduce((sum, value) => sum + value, 0);
 
     return (
       <Card className="mt-4">

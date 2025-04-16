@@ -12,6 +12,7 @@ Pandora is a customized version of the HeyGen Interactive Avatar demo, tailored 
 - Voice activity detection for efficient audio processing
 - Performance optimization for low-latency responses
 - Background removal and customization options
+- RAG (Retrieval Augmented Generation) pipeline for knowledge-based responses
 
 ## Project Structure
 
@@ -31,7 +32,7 @@ Pandora is a customized version of the HeyGen Interactive Avatar demo, tailored 
 - app/: Main application directory using Next.js App Router structure.
 - components/: Reusable React components for avatar and UI elements.
 - public/: Static assets for the website, including background images and logos.
-- services/: Service implementations for external APIs like audio recording and Azure OpenAI.
+- services/: Service implementations for external APIs like audio recording, OpenAI, and Azure OpenAI.
 - styles/: CSS and styling files using Tailwind CSS.
 - documentation/: Centralized location for all project documentation files.
 
@@ -78,6 +79,10 @@ Pandora is a customized version of the HeyGen Interactive Avatar demo, tailored 
 - configService.ts: Simple service for managing application configuration. Currently only returns the defaultConfig from configTypes.ts.
 - constants.ts: Constant values used throughout the application.
 
+### Services Directory
+- audio-recorder.ts: Service class for recording audio from the user's microphone with event handling and error management.
+- openai-service.ts: Service class for interacting with OpenAI APIs, providing centralized prompt formatting, API calls, response parsing, and RAG functionality.
+
 ### Public Directory
 - bg-lobby.png, bg-office.png, bg-maya.png: Background images for the avatar interface.
 - bg-empty-lobby.jpg: Default background for the avatar.
@@ -123,9 +128,54 @@ The following API routes are deprecated or not used in production:
 - api/process-conversation/: Not actively used in production.
 - api/generate-response/: Not actively used in production.
 
-### Services Directory
-- audio-recorder.ts: Service class for recording audio from the user's microphone with event handling and error management.
-- azure-openai.ts: Service class for interacting with Azure OpenAI APIs, providing methods to generate responses from text and process voice input.
+## OpenAI Service
+
+### Overview
+The `openai-service.ts` centralizes all OpenAI API interactions, providing a consistent interface for prompt formatting, API calls, response handling, and performance metrics tracking. It replaces direct API calls with a service layer that can be reused across components.
+
+### Key Features
+1. **Centralized Prompt Templates**: Maintains system prompts in one location for easy updates and standardization
+2. **Consistent Message Formatting**: Standardizes how messages are formatted before being sent to OpenAI
+3. **Unified Error Handling**: Implements consistent error handling and logging across all OpenAI interactions
+4. **Performance Metrics**: Tracks detailed timing metrics for all operations in the OpenAI pipeline
+5. **RAG Pipeline**: Implements a Retrieval Augmented Generation pipeline for knowledge-based responses
+
+### Main Interfaces
+- `ChatMessage`: Defines the structure for system/user/assistant messages
+- `ChatOptions`: Configuration options for OpenAI calls including temperature, streaming, and RAG settings
+- `ChatResponse`: Standard response structure with message content and metrics
+- `RagDocument`: Structure for documents retrieved during the RAG process
+- `RagCitation`: Structure for citations that can be returned with RAG responses
+
+### Core Functions
+- `formatChatMessages()`: Formats user messages with system prompts and context information
+- `callChatApi()`: Makes the actual API call to OpenAI with proper error handling
+- `processUserMessage()`: Main entry point for processing a user message (with or without RAG)
+- `processWithRAG()`: Implements the complete RAG pipeline with document retrieval and context enhancement
+- `parseJsonResponse()`: Helper for parsing non-streaming responses
+- `prewarmConnection()`: Prewarms connections to the API to reduce latency
+
+### RAG Pipeline
+The Retrieval Augmented Generation pipeline provides document-based responses:
+
+1. **Document Retrieval**: `retrieveRelevantDocuments()` finds relevant documents for a query
+2. **Context Formatting**: `formatRetrievedDocuments()` formats retrieved documents as context
+3. **Enhanced Prompting**: Combines user query with retrieved context and specialized RAG prompts
+4. **Performance Tracking**: Measures timing for each stage of the RAG pipeline
+
+### Usage
+Components can use the OpenAI service like this:
+```typescript
+import { processUserMessage, parseJsonResponse } from 'services/openai-service';
+
+// For standard chat
+const response = await processUserMessage(userInput);
+const result = await parseJsonResponse(response);
+
+// For RAG-enhanced responses
+const response = await processUserMessage(userInput, { useRAG: true });
+const result = await parseJsonResponse(response);
+```
 
 ## Lib vs Services Redundancies and Organization
 
@@ -146,18 +196,18 @@ The following API routes are deprecated or not used in production:
    - `services` directory contains:
      - OOP service classes with methods for specific functionality
 
-3. **Missing Service Integration:**
-   - `services/azure-openai.ts` references `/api/generate-response` and `/api/process-voice` endpoints, but these endpoints handle their own implementation without using this service
-   - The actual API implementation in the API routes doesn't reference these service classes
+3. **Service Integration Updates:**
+   - `services/azure-openai.ts` has been removed as it wasn't being used
+   - New `services/openai-service.ts` centralizes all OpenAI interactions
 
 ### Recommended Organization
 
 The application would benefit from a more consistent architectural approach:
 
 1. **Move all service-like functionality to `services/`:**
+   - ✅ Create an `OpenAIService` that centralizes all OpenAI API interactions
    - Create an `AudioService` that combines functionality from both `streamingAudio.ts` and `audio-recorder.ts`
    - Move Voice Activity Detection functionality to a `VoiceDetectionService` in the services directory
-   - Keep the `AzureOpenAIService` but ensure API endpoints use it
 
 2. **Keep `lib/` for pure utilities and configuration:**
    - Configuration (configTypes.ts, configService.ts)
@@ -218,11 +268,19 @@ Azure services are responsible for:
 1. Transcribing speech to text using Azure OpenAI Whisper model
 2. Processing text through Azure OpenAI chat completion to generate responses
 
+### OpenAI Service Integration
+The OpenAI service centralizes:
+1. Prompt formatting and engineering
+2. API calls with consistent error handling
+3. Response parsing and metrics tracking
+4. RAG pipeline for knowledge-based responses
+
 The complete flow:
 1. User speaks into microphone
 2. Audio is processed and sent to Azure Whisper for transcription
-3. Transcribed text is sent to Azure OpenAI for generating a response
-4. Response is passed to HeyGen avatar for lip-synced animation
+3. Transcribed text is sent to the OpenAI service
+4. OpenAI service formats messages, handles RAG if enabled, and calls the API
+5. Response is passed to HeyGen avatar for lip-synced animation
 
 ## Deployment
 The application is deployed as an Azure Web App.
@@ -261,9 +319,10 @@ The application uses a typed configuration system defined in app/lib/configTypes
    - Captures audio from the microphone
    - Processes it using Web Workers (when available)
    - Sends it to Azure services for transcription (via /api/transcribe)
-   - Gets a response from OpenAI (via /api/chat)
+   - Gets a response from the OpenAI service
    - Animates the avatar to speak the response
-4. The application also provides separate test pages for testing voice functionality without the avatar UI.
+4. For knowledge-based questions, the RAG pipeline can be enabled to enhance responses with retrieved information.
+5. The application also provides separate test pages for testing voice functionality without the avatar UI.
 
 ## Performance Optimization Features
 1. Web Worker audio processing: Audio processing is offloaded to Web Workers to free up the main thread.
@@ -276,6 +335,7 @@ The application uses a typed configuration system defined in app/lib/configTypes
 8. Optimized parameter profiles: Different parameters are used for interim vs. final audio chunks.
 9. In-memory caching: Session data and transcription results are cached in memory for faster retrieval.
 10. Connection pooling: Active connections are tracked and reused to avoid reconnection overhead.
+11. OpenAI service prewarming: Service connections are prewarmed to reduce latency.
 
 ## Identified Issues and Refactoring Needs
 
@@ -310,6 +370,8 @@ The application uses a typed configuration system defined in app/lib/configTypes
 - ✅ Create a shared audio processing module (services/AudioService.ts) that combines functionality from both streamingAudio.ts and audio-recorder.ts
 - ✅ Create React hook (hooks/useAudioService.ts) for easy integration in components
 - ✅ Refactor existing StreamingVoiceTest component to use the new AudioService via the hook
+- ✅ Create a centralized OpenAI service for consistent handling of AI interactions
+- ✅ Implement RAG pipeline for knowledge-based responses
 - Next: Refactor InteractiveAvatar.tsx to use the AudioService instead of direct audio handling
 - Merge duplicate Web Worker implementations into a single, well-documented version
 - Remove or clearly mark deprecated API routes
@@ -318,9 +380,11 @@ The application uses a typed configuration system defined in app/lib/configTypes
 #### 2. Component Structure Improvement
 - ✅ Extract audio processing logic into a custom hook (useAudioService)
 - ✅ Create a clear separation between UI components and service logic with the hook pattern
+- ✅ Update components to use the new OpenAI service 
 - Next: Apply the same pattern to refactor InteractiveAvatar.tsx to be more modular
 
 #### 3. API Cleanup
+- ✅ Remove unused/deprecated service (azure-openai.ts)
 - Remove unused/deprecated API routes
 - Standardize API response formats
 - Improve error handling and logging
@@ -333,13 +397,16 @@ The application uses a typed configuration system defined in app/lib/configTypes
 
 #### 5. Service Architecture Reorganization
 - ✅ Standardize on a consistent architectural approach (OOP for services)
+- ✅ Create centralized OpenAI service with comprehensive functionality
+- ✅ Implement RAG pipeline infrastructure
 - ✅ Merge redundant audio processing functionality into AudioService
 - Create a proper service dependency system
 - Move browser API interactions (audio, speech, etc.) into dedicated services
 - Ensure API routes use the service classes
 
 #### 6. Documentation Improvements
-- Add inline documentation to all major components and functions
+- ✅ Add inline documentation to all major components and functions
+- ✅ Update project overview with the latest architecture changes
 - Create a developer onboarding guide
 - Add architecture diagrams showing component relationships
 

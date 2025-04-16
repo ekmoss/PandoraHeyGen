@@ -3,6 +3,10 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Button, Card, CardBody, Chip, Tooltip } from "@nextui-org/react";
 import { useAudioService } from "@/hooks/useAudioService";
+import {
+  processUserMessage,
+  parseJsonResponse,
+} from "../../services/openai-service";
 
 interface StreamingVoiceTestProps {
   onTranscriptionComplete?: (text: string) => void;
@@ -139,53 +143,82 @@ export default function StreamingVoiceTest({
       setIsProcessing(true);
 
       try {
-        // Call the chat API
+        // Log service preparation time
+        const serviceStartTime = performance.now();
+        logPerformance("Service Preparation", chatStartTime, serviceStartTime);
+
+        // Call the chat API using the new service
         console.log("Calling chat API with transcription:", transcription);
-        const chatResponse = await fetch("/api/chat", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            messages: [
-              {
-                role: "system",
-                content: "You are a helpful assistant. Respond concisely.",
-              },
-              {
-                role: "user",
-                content: transcription,
-              },
-            ],
-          }),
+        const chatResponse = await processUserMessage(transcription, {
+          stream: false,
         });
+
+        // Log API call duration
+        const apiResponseTime = performance.now();
+        logPerformance("OpenAI API Call", serviceStartTime, apiResponseTime);
 
         if (!chatResponse.ok) {
           throw new Error(`Chat API error: ${chatResponse.status}`);
         }
 
-        const data = await chatResponse.json();
-        console.log("Chat API metrics:", data.metrics);
+        // Log response parsing time
+        const parseStartTime = performance.now();
+        const data = await parseJsonResponse(chatResponse);
+        const parseEndTime = performance.now();
+        logPerformance("Parse Response", parseStartTime, parseEndTime);
 
-        const chatEndTime = performance.now();
-        logPerformance("OpenAI Chat API Call", chatStartTime, chatEndTime);
-
-        // Store API metrics if available
+        // Log metrics if available
         if (data.metrics) {
+          console.log("Chat API metrics:", data.metrics);
           setChatMetrics(data.metrics);
+
+          // Add the server-side metrics to our client-side metrics
+          // for a complete picture of the request lifecycle
+          if (data.metrics.openAIApiCall) {
+            logPerformance(
+              "Server: OpenAI API Call",
+              0, // Relative time, not absolute
+              data.metrics.openAIApiCall
+            );
+          }
+
+          if (data.metrics.parseRequest) {
+            logPerformance(
+              "Server: Parse Request",
+              0,
+              data.metrics.parseRequest
+            );
+          }
+
+          if (data.metrics.parseResponse) {
+            logPerformance(
+              "Server: Parse Response",
+              0,
+              data.metrics.parseResponse
+            );
+          }
         }
 
+        const chatEndTime = performance.now();
+        logPerformance("Total API Roundtrip", chatStartTime, chatEndTime);
+
         // Extract the message from the response
-        const responseMessage =
-          data.message ||
-          (data.choices && data.choices[0]?.message?.content) ||
-          "No response received";
+        setResponse(data.message || "No response received");
 
-        setResponse(responseMessage);
+        // Log the full end-to-end processing time
+        const totalProcessingTime = performance.now() - chatStartTime;
+        logPerformance(
+          "End-to-End Processing",
+          chatStartTime,
+          performance.now()
+        );
 
-        const parseEndTime = performance.now();
-        logPerformance("Parse Chat Response", chatEndTime, parseEndTime);
-        logPerformance("Total Chat Processing", chatStartTime, parseEndTime);
+        // Update our total latency measure
+        if (recordingStartTimeRef.current > 0) {
+          const totalLatency =
+            performance.now() - recordingStartTimeRef.current;
+          setTotalLatency(totalLatency);
+        }
       } catch (error: any) {
         console.error("Error processing chat:", error);
         setError(
@@ -387,9 +420,14 @@ export default function StreamingVoiceTest({
     setUsingVAD((prev) => !prev);
   }, []);
 
-  // Render API metrics in a table
+  // Render API metrics in a table with enhanced information
   const renderApiMetricsTable = (title: string, metrics: ApiMetrics | null) => {
     if (!metrics) return null;
+
+    // Calculate total time excluding parent metrics
+    const totalTime =
+      metrics.total ||
+      Object.values(metrics).reduce((sum, value) => sum + value, 0);
 
     return (
       <div>
@@ -400,19 +438,28 @@ export default function StreamingVoiceTest({
               <tr>
                 <th className="px-1 py-1 text-left">Metric</th>
                 <th className="px-1 py-1 text-right">Time</th>
+                <th className="px-1 py-1 text-right">%</th>
               </tr>
             </thead>
             <tbody>
-              {Object.entries(metrics).map(([key, value]) => (
-                <tr key={key} className="border-t border-gray-200">
-                  <td className="px-1 py-1 text-left">{key}</td>
-                  <td className="px-1 py-1 text-right">
-                    {typeof value === "number"
-                      ? formatTime(value)
-                      : String(value)}
-                  </td>
-                </tr>
-              ))}
+              {Object.entries(metrics)
+                // Sort by time (descending)
+                .sort(([, a], [, b]) => (b as number) - (a as number))
+                .map(([key, value]) => (
+                  <tr key={key} className="border-t border-gray-200">
+                    <td className="px-1 py-1 text-left">{key}</td>
+                    <td className="px-1 py-1 text-right">
+                      {typeof value === "number"
+                        ? formatTime(value)
+                        : String(value)}
+                    </td>
+                    <td className="px-1 py-1 text-right">
+                      {typeof value === "number" && totalTime > 0
+                        ? `${((value / totalTime) * 100).toFixed(1)}%`
+                        : "-"}
+                    </td>
+                  </tr>
+                ))}
             </tbody>
           </table>
         </div>
