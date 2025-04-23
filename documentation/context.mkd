@@ -1,0 +1,57 @@
+please use nvm
+
+understanding the codebase the app is where the main next js application sits
+
+services is where the backend complex logic is 
+
+api is where you have your api endpoints each is represented by a route
+
+the page.tsx's are the actual routes and pages 
+* test-streaming
+* test-rag
+* test-voice
+
+* page (the primary home page)
+
+frontend stuff
+* layouts.tsx is the react root layout
+* components houses all the components
+
+
+currently trying to 
+
+# Step 2: Validate Azure Cognitive Search
+Write a script to create an index, upload documents, and perform a search.
+
+Test:
+
+Run the test and ensure the index is created, documents are uploaded, and search results are returned.
+
+# Step 3: Validate Azure OpenAI Service
+Write a script to generate embeddings and perform a basic chat completion.
+
+
+SearchIndexerClient: Used to interact with Azure Cognitive Search for managing indexers.
+SearchIndexer: Defines the indexer with properties like name, description, skillsetName, targetIndexName, and dataSourceName.
+parameters: Optional configuration for the indexer, such as indexingMode.
+
+Test:
+
+Run the test and ensure embeddings and completions are generated correctly.
+
+# Step 4: Connect All Components into a RAG Pipeline
+Combine the services into a pipeline that retrieves relevant documents and generates a response.
+
+Test:
+
+Run the test and ensure the pipeline retrieves documents and generates a coherent response.
+
+Explanation of the Connection
+Blob Storage: Stores raw documents or data files.
+Cognitive Search: Indexes the documents from Blob Storage and enables efficient retrieval.
+OpenAI Service: Generates embeddings for queries and documents, and produces responses based on retrieved documents.
+RAG Pipeline: Combines the services:
+Query embeddings are used to search for relevant documents.
+Retrieved documents are used as context for generating a response.
+This modular approach ensures each component works independently before integrating them into the RAG pipeline.
+

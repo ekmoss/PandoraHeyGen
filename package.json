@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^0.0.34",
+    "@azure/search-documents": "^12.1.0",
     "@azure/storage-blob": "^12.26.0",
     "@heygen/streaming-avatar": "^2.0.10",
     "@nextui-org/button": "2.0.34",
