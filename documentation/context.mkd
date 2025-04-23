@@ -1,5 +1,23 @@
 please use nvm
 
+need to create a provisioner for it
+
+import { createSearchIndex } from "./index";
+import { createDataSource } from "./data-source";
+import { createRagIndexer } from "./indexer";
+
+async function provisionAll() {
+  await createDataSource();
+  await createSearchIndex();
+  await createRagIndexer();
+}
+
+provisionAll().catch((err) => {
+  console.error("Provisioning failed:", err);
+});
+
+
+
 understanding the codebase the app is where the main next js application sits
 
 services is where the backend complex logic is 
