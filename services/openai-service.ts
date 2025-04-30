@@ -9,6 +9,10 @@
  * Use this service from any component that needs to interact with OpenAI
  */
 
+import { SearchClient, AzureKeyCredential } from "@azure/search-documents";
+import { AzureOpenAI } from "openai";
+import { createParser } from 'eventsource-parser';
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -57,6 +61,11 @@ export interface ChatOptions {
    * Maximum number of documents to retrieve for RAG
    */
   ragMaxDocuments?: number;
+  
+  /**
+   * Minimum score of documents to be passed to the LLM
+   */
+  minScore?: number;
 }
 
 export interface ChatResponse {
@@ -76,13 +85,9 @@ export interface PromptTemplates {
  * Interface for documents retrieved during RAG
  */
 export interface RagDocument {
+  title: string;
   content: string;
-  metadata: {
-    source: string;
-    title?: string;
-    url?: string;
-    date?: string;
-  };
+  chunk_id: string;
   score?: number;
 }
 
@@ -108,7 +113,30 @@ export const PROMPT_TEMPLATES: PromptTemplates = {
     "You are Maya, a virtual assistant for Capgemini. Your responses should be professional, helpful, and reflect Capgemini brand values. Keep responses under 3 sentences when possible.",
   ragAssistant:
     "You are Maya, a virtual assistant for Capgemini with access to company knowledge. You have been provided with relevant documents to help answer the user's question. Use this context to provide accurate, helpful responses. When you use information from the provided documents, make sure to summarize rather than quoting directly. Your responses should be professional and reflect Capgemini brand values. Keep responses under 3 sentences when possible.",
+  ragPrompt: `
+You are an AI assistant that helps users learn from the information found in the source material.
+Answer the query using only the sources provided below.
+Use bullets if the answer has multiple points.
+If the answer is longer than 3 sentences, provide a summary.
+Answer ONLY with the facts listed in the list of sources below. Cite your source when you answer the question
+If there isn't enough information below, say you don't know.
+Do not generate answers that don't use the sources below.
+Query: {query}
+Sources:
+{sources}
+`,
 };
+
+
+const AZURE_OPENAI_ENDPOINT = process.env.AZURE_OPENAI_ENDPOINT!;
+const AZURE_OPENAI_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT!;
+
+const openai = new AzureOpenAI({
+    deploymentName: AZURE_OPENAI_DEPLOYMENT,
+    apiVersion: "2024-02-15-preview",
+    endpoint: AZURE_OPENAI_ENDPOINT,
+  });
+
 
 /**
  * Formats a user message with the appropriate context and system prompt
@@ -149,13 +177,19 @@ export function formatChatMessages(
  * @param options Configuration options for the retrieval process
  * @returns Array of retrieved documents with relevance scores
  */
+interface VectorSearchConfig {
+  maxDocuments?: number;
+  minScore?: number;
+  fields?: string[];
+}
+
+const AZURE_SEARCH_SERVICE = process.env.AZURE_SEARCH_SERVICE!;
+const AZURE_SEARCH_API_KEY = process.env.AZURE_SEARCH_API_KEY!;
+const INDEX_NAME = process.env.AZURE_SEARCH_SERVICE_INDEX_NAME!;
+
 export async function retrieveRelevantDocuments(
   query: string,
-  options: {
-    maxDocuments?: number;
-    minRelevanceScore?: number;
-    collectionName?: string;
-  } = {}
+  options: VectorSearchConfig = {}
 ): Promise<{
   documents: RagDocument[];
   metrics: { [key: string]: number };
@@ -166,64 +200,60 @@ export async function retrieveRelevantDocuments(
   try {
     console.log(`[RAG] Retrieving documents for query: "${query}"`);
 
-    // TODO: Implement retrieval from vector database or knowledge source
-    // This is where you would connect to your vector DB (e.g., Pinecone, Weaviate, etc.)
-    // Example pseudocode:
-    //
-    // 1. Convert query to embedding
-    // const embeddingStartTime = performance.now();
-    // const embedding = await getEmbedding(query);
-    // metrics.embeddingTime = performance.now() - embeddingStartTime;
-    //
-    // 2. Query vector database
-    // const dbQueryStartTime = performance.now();
-    // const results = await vectorDb.query({
-    //   vector: embedding,
-    //   topK: options.maxDocuments || 3,
-    //   includeMetadata: true,
-    // });
-    // metrics.dbQueryTime = performance.now() - dbQueryStartTime;
-    //
-    // 3. Process and format results
-    // const documents = results.map(item => ({
-    //   content: item.metadata.content,
-    //   metadata: {
-    //     source: item.metadata.source,
-    //     title: item.metadata.title,
-    //     url: item.metadata.url,
-    //   },
-    //   score: item.score,
-    // }));
+    const searchClient = new SearchClient(
+      AZURE_SEARCH_SERVICE,
+      INDEX_NAME,
+      new AzureKeyCredential(AZURE_SEARCH_API_KEY)
+    );
 
-    // For now, return mock data
-    const mockDocuments: RagDocument[] = [
-      {
-        content:
-          "This is a placeholder for actual retrieved content. Replace this with real document retrieval.",
-        metadata: {
-          source: "Mock Database",
-          title: "Sample Document",
-        },
-        score: 0.95,
+    const searchStartTime = performance.now();
+    const searchResults = await searchClient.search("*", {
+      vectorSearchOptions: {
+        queries: [
+          {
+            kind: "text",
+            fields: options.fields || ["content_vector"],
+            kNearestNeighborsCount: options.maxDocuments || 5,
+            text: query
+          }
+        ]
       },
-    ];
+      select: ["title", "content", "chunk_id"],
+      top: options.maxDocuments || 5
+    });
+    metrics.searchTime = performance.now() - searchStartTime;
 
-    // Add total retrieval time to metrics
+    const documents: RagDocument[] = [];
+    for await (const result of searchResults.results) {
+      if (result.document && (!options.minScore || result.score >= options.minScore)) {
+        documents.push({
+          title: result.document.title || 'N/A',
+          content: result.document.content || 'N/A',
+          chunk_id: result.document.chunk_id || 'N/A',
+          score: result.score
+        });
+      }
+    }
+
     metrics.totalRetrievalTime = performance.now() - startTime;
+    console.log(`[RAG] Found ${documents.length} relevant documents`);
+
+    console.log('[RAG] Retrieved documents with scores:', 
+      documents.map(d => ({
+        chunk_id: d.chunk_id,
+        score: d.score
+      }))
+    );
 
     return {
-      documents: mockDocuments,
+      documents,
       metrics,
     };
   } catch (error) {
     console.error("[RAG] Error retrieving documents:", error);
     metrics.totalRetrievalTime = performance.now() - startTime;
     metrics.error = 1;
-
-    return {
-      documents: [],
-      metrics,
-    };
+    throw error;
   }
 }
 
@@ -238,22 +268,14 @@ export function formatRetrievedDocuments(documents: RagDocument[]): string {
     return "";
   }
 
-  let contextString =
-    "Here are some relevant documents that may help you answer the user's question:\n\n";
-
-  documents.forEach((doc, index) => {
-    contextString += `DOCUMENT ${index + 1}:\n`;
-    contextString += `Source: ${doc.metadata.source}`;
-    if (doc.metadata.title) {
-      contextString += ` - ${doc.metadata.title}`;
-    }
-    contextString += `\n\n${doc.content}\n\n`;
-  });
-
-  contextString +=
-    "Use the information from these documents to provide a helpful and accurate response. If the documents don't contain relevant information, respond based on your general knowledge.";
-
-  return contextString;
+  return documents
+    .map(doc => 
+      `TITLE: ${doc.title}, ` +
+      `CONTENT: ${doc.content}, ` +
+      `CHUNK_ID: ${doc.chunk_id}` +
+      (doc.score !== undefined ? `, SCORE: ${doc.score}` : '')
+    )
+    .join("\n=================\n");
 }
 
 /**
@@ -286,6 +308,7 @@ export async function processWithRAG(
     const { documents, metrics: retrievalMetrics } =
       await retrieveRelevantDocuments(searchQuery, {
         maxDocuments: options.ragMaxDocuments || 3,
+        minScore: options.minScore  // Add this line
       });
     ragMetrics.retrievalTime = performance.now() - retrievalStartTime;
 
@@ -364,33 +387,86 @@ export async function callChatApi(
   messages: ChatMessage[],
   options: ChatOptions = {}
 ): Promise<Response> {
-  const apiEndpoint = "/api/chat";
-
   try {
-    const response = await fetch(apiEndpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Priority: "high",
-      },
-      body: JSON.stringify({
-        messages,
-        stream: options.stream ?? true, // Default to streaming
-        temperature: options.temperature,
-        preConnect: options.preConnect,
-      }),
+    // Add debug logging for the complete prompt
+    console.log('\n=== Complete Prompt ===');
+    messages.forEach((msg, index) => {
+      console.log(`\n[${msg.role.toUpperCase()}] Message ${index + 1}:`);
+      console.log(msg.content);
+    });
+    console.log('\n=== End Prompt ===\n');
+
+    const completion = await openai.chat.completions.create({
+      model: AZURE_OPENAI_DEPLOYMENT,
+      messages,
+      temperature: options.temperature ?? 0.7,
+      max_tokens: 800,
+      stream: options.stream ?? true,
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+    // If it's a pre-connection test, return success
+    if (options.preConnect) {
+      return new Response(JSON.stringify({ success: true }));
     }
 
-    return response;
+    // Handle streaming response
+    if (options.stream) {
+      // Convert the streaming response to a Web API Response
+      const stream = OpenAIStream(completion);
+      return new Response(stream);
+    }
+
+    // Handle non-streaming response
+    const content = completion.choices[0]?.message?.content || "";
+    return new Response(JSON.stringify({
+      message: content,
+      metrics: {
+        completionTokens: completion.usage?.completion_tokens,
+        promptTokens: completion.usage?.prompt_tokens,
+        totalTokens: completion.usage?.total_tokens,
+      }
+    }));
+
   } catch (error) {
     console.error("Error in OpenAI service:", error);
     throw error;
   }
+}
+
+// Add helper function for streaming
+function OpenAIStream(response: any) {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      function onParse(event: any) {
+        if (event.type === 'event') {
+          const data = event.data;
+          if (data === '[DONE]') {
+            controller.close();
+            return;
+          }
+          try {
+            const json = JSON.parse(data);
+            const text = json.choices[0]?.delta?.content || '';
+            const queue = encoder.encode(text);
+            controller.enqueue(queue);
+          } catch (e) {
+            controller.error(e);
+          }
+        }
+      }
+
+      const parser = createParser(onParse);
+
+      for await (const chunk of response) {
+        parser.feed(decoder.decode(chunk));
+      }
+    },
+  });
+
+  return stream;
 }
 
 /**
