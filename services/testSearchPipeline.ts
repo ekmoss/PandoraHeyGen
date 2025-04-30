@@ -1,4 +1,4 @@
-import { SearchClient, AzureKeyCredential as SearchKeyCredential } from "@azure/search-documents";
+import { SearchClient, AzureKeyCredential } from "@azure/search-documents";
 import { AzureOpenAI } from "openai";
 
 const AZURE_SEARCH_SERVICE = process.env.AZURE_SEARCH_SERVICE!;
@@ -15,6 +15,24 @@ const openai = new AzureOpenAI({
     endpoint: AZURE_OPENAI_ENDPOINT,
   });
 
+  
+/**
+ * Interfaces for type safety
+ */
+
+interface SearchResult {
+  title: string;
+  content: string;
+  chunk_id: string;
+  score: number;
+}
+
+interface RAGResponse {
+  answer: string;
+  sources: string[];
+}
+
+
 // PROMPT_TEMPLATES.default
 const GROUNDED_PROMPT = `
 You are an AI assistant that helps users learn from the information found in the source material.
@@ -29,25 +47,45 @@ Sources:
 {sources}
 `;
 
-interface SearchResult {
+/**
+ * Creates a search client with proper authentication
+ */
+interface SearchDocument {
   title: string;
   content: string;
   chunk_id: string;
-  score: number;
 }
 
+function createSearchClient(): SearchClient<SearchDocument> {
+  return new SearchClient(
+    AZURE_SEARCH_SERVICE,
+    INDEX_NAME,
+    new AzureKeyCredential(AZURE_SEARCH_API_KEY)
+  );
+}
+
+/**
+ * Formats search results into a readable string format
+ */
+function formatSearchResult(document: any, score?: number): string {
+  return `TITLE: ${document.title || 'N/A'}, ` +
+         `CONTENT: ${document.content || 'N/A'}, ` +
+         `CHUNK_ID: ${document.chunk_id || 'N/A'}` +
+         (score !== undefined ? `, SCORE: ${score}` : '');
+}
+
+/**
+ * Tests the search pipeline by performing a vector search
+ * @param query The search query to test
+ * @returns Array of formatted search results
+ */
 export async function testSearchPipeline(query: string): Promise<string[]> {
   try {
     if (!query?.trim()) {
       throw new Error('Query string cannot be empty');
     }
 
-    const searchClient = new SearchClient(
-      AZURE_SEARCH_SERVICE,
-      INDEX_NAME,
-      new SearchKeyCredential(AZURE_SEARCH_API_KEY)
-    );
-
+    const searchClient = createSearchClient();
     const searchResults = await searchClient.search("*", {
       vectorSearchOptions: {
         queries: [
@@ -60,20 +98,13 @@ export async function testSearchPipeline(query: string): Promise<string[]> {
         ]
       },
       select: ["title", "content", "chunk_id"],
-      queryLanguage: "en-us",
       includeTotalCount: true
     });
 
     const sourcesFormatted: string[] = [];
-    
     for await (const result of searchResults.results) {
       if (result.document) {
-        sourcesFormatted.push(
-          `TITLE: ${result.document.title || 'N/A'}, ` +
-          `CONTENT: ${result.document.content || 'N/A'}, ` +
-          `CHUNK_ID: ${result.document.chunk_id || 'N/A'}, ` +
-          `SCORE: ${result.score || 0}`
-        );
+        sourcesFormatted.push(formatSearchResult(result.document, result.score));
       }
     }
 
@@ -87,16 +118,15 @@ export async function testSearchPipeline(query: string): Promise<string[]> {
   }
 }
 
-export async function completeRAGPipeline(query: string): Promise<{ answer: string, sources: string[] }> {
+/**
+ * Complete RAG pipeline that combines search and LLM completion
+ * @param query The user's query
+ * @returns Generated answer and source documents
+ */
+export async function completeRAGPipeline(query: string): Promise<RAGResponse> {
   try {
-    // 1. Set up search client
-    const searchClient = new SearchClient(
-      AZURE_SEARCH_SERVICE,
-      INDEX_NAME,
-      new SearchKeyCredential(AZURE_SEARCH_API_KEY)
-    );
-
-    // 2. Perform vector search (no changes needed)
+    // 1. Perform vector search
+    const searchClient = createSearchClient();
     const searchResults = await searchClient.search("*", {
       vectorSearchOptions: {
         queries: [
@@ -112,19 +142,15 @@ export async function completeRAGPipeline(query: string): Promise<{ answer: stri
       includeTotalCount: true
     });
 
-    // 3. Format search results (no changes needed)
+    // 2. Format search results
     const sourcesFormatted: string[] = [];
     for await (const result of searchResults.results) {
       if (result.document) {
-        sourcesFormatted.push(
-          `TITLE: ${result.document.title || 'N/A'}, ` +
-          `CONTENT: ${result.document.content || 'N/A'}, ` +
-          `CHUNK_ID: ${result.document.chunk_id || 'N/A'}`
-        );
+        sourcesFormatted.push(formatSearchResult(result.document));
       }
     }
 
-    // 4. Generate completion with OpenAI - Updated to use new SDK
+    // 3. Generate completion with OpenAI
     const formattedPrompt = GROUNDED_PROMPT
       .replace("{query}", query)
       .replace("{sources}", sourcesFormatted.join("\n=================\n"));
