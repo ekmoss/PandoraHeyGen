@@ -762,9 +762,16 @@ export default function InteractiveAvatar({
   const handleTranscriptionResult = useCallback(
     async (transcribedText: string, aiResponse: string) => {
       console.log(`Transcription result: "${transcribedText}"`);
+      console.log(`AI Response: "${aiResponse}"`); // Add this line to verify the response
 
       // Update the text state
       setText(transcribedText);
+
+      // Ensure we have a non-empty response
+      if (!aiResponse) {
+        console.error("🗣️ [SPEAK] No AI response to speak");
+        return;
+      }
 
       // Have avatar speak the response
       console.log("Requesting avatar to speak response...");
@@ -772,17 +779,52 @@ export default function InteractiveAvatar({
 
       if (avatar.current) {
         try {
-          await avatar.current.speak({
-            text: aiResponse,
+          // Explicit type for speak request
+          const speakRequest = {
+            text: aiResponse, // Use the full AI response
             taskType: TaskType.REPEAT,
             taskMode: TaskMode.SYNC,
-          });
+          };
+
+          console.log(
+            "🗣️ [SPEAK] Attempting to speak with parameters:",
+            speakRequest
+          );
+
+          // Verify speak method exists with type-safe check
+          if (typeof avatar.current.speak !== "function") {
+            throw new Error("Speak method not available on avatar instance");
+          }
+
+          // Perform type assertion to bypass TypeScript's strict checks
+          const speakResponse = await (avatar.current as any).speak(
+            speakRequest
+          );
+
+          console.log("🗣️ [SPEAK] Speak method response:", speakResponse);
           console.log("Avatar speech completed");
-        } catch (speakError) {
-          console.error("Error during avatar speech:", speakError);
+        } catch (speakError: any) {
+          console.error("🗣️ [SPEAK] Error details:", {
+            name: speakError.name,
+            message: speakError.message,
+            stack: speakError.stack,
+          });
+
+          // Additional error handling for API errors
+          if (speakError.response) {
+            try {
+              const errorBody = await speakError.response.text();
+              console.error("🗣️ [SPEAK] API Error Body:", errorBody);
+            } catch (parseError) {
+              console.error(
+                "🗣️ [SPEAK] Could not parse error response:",
+                parseError
+              );
+            }
+          }
         }
       } else {
-        console.error("Avatar reference not available");
+        console.error("🗣️ [SPEAK] Avatar reference is null");
       }
 
       const speakEnd = performance.now();
@@ -942,7 +984,15 @@ export default function InteractiveAvatar({
       }
 
       const chatData = await chatResponse.json();
-      const aiResponse = chatData.text || "";
+      const aiResponse = chatData.text || chatData.message || "";
+      console.log("🤖 [AI] Full response received:", aiResponse); // Add this line
+      console.log("🤖 [AI] Chat Data was:", chatData);
+
+      // Ensure non-empty response
+      if (!aiResponse.trim()) {
+        console.error("🤖 [AI] Received empty response");
+        return null;
+      }
 
       const chatEndTime = performance.now();
       console.log(
